@@ -64,6 +64,12 @@ settings are also restored automatically when the app exits.
   that is inherent to any local loopback service (Fiddler included).
 - When you're done, click **Disable** on the system proxy and **uninstall** the CA so
   the machine isn't left able to decrypt your HTTPS.
+- **Abnormal-exit recovery.** On a clean shutdown (or Ctrl+C) MiniFiddler restores the
+  Windows proxy automatically. If the process is *hard-killed* (e.g. `Stop-Process -Force`,
+  power loss), the OS can't run cleanup, so the system proxy may stay enabled in the
+  registry. MiniFiddler detects this on the next launch: it reconciles its state with the
+  registry, shows the proxy as **On**, and disables it on clean shutdown or when you click
+  **Disable**. (Fiddler has the same inherent limitation and likewise reconciles on launch.)
 - Apps that ignore the system proxy or use certificate pinning won't be
   captured/decrypted — the same limitation Fiddler has.
 

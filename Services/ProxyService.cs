@@ -98,6 +98,41 @@ public sealed class ProxyService : IHostedService, IDisposable
         _logger.LogInformation("System proxy disabled");
     }
 
+    /// <summary>
+    /// Reconciles in-memory state with the actual Windows proxy registry at startup.
+    /// If a previous session exited abnormally (crash/hard-kill) it may have left the
+    /// system proxy pointing at us; reflect that so the UI shows the true state and the
+    /// user can turn it off. Only claims the proxy if it points at our own endpoint.
+    /// </summary>
+    public bool ReconcileSystemProxyState()
+    {
+        if (!OperatingSystem.IsWindows()) return false;
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(
+                @"Software\Microsoft\Windows\CurrentVersion\Internet Settings", writable: false);
+            var enabled = (key?.GetValue("ProxyEnable") as int?) == 1;
+            var server = key?.GetValue("ProxyServer") as string ?? "";
+
+            // Only treat it as "ours" if the system proxy points at our loopback port.
+            var pointsAtUs = server.Contains($":{Port}", StringComparison.Ordinal)
+                             && (server.Contains("127.0.0.1", StringComparison.OrdinalIgnoreCase)
+                                 || server.Contains("localhost", StringComparison.OrdinalIgnoreCase));
+
+            SystemProxyEnabled = enabled && pointsAtUs;
+            if (SystemProxyEnabled)
+                _logger.LogWarning(
+                    "Detected a leftover system proxy from a previous session (ProxyServer={Server}). " +
+                    "Reflecting it as enabled; it will be disabled on clean shutdown or via the UI.", server);
+            return SystemProxyEnabled;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not read system proxy state");
+            return false;
+        }
+    }
+
     // ---- Lifecycle ---------------------------------------------------------
     public Task StartAsync(CancellationToken cancellationToken)
     {
@@ -122,13 +157,28 @@ public sealed class ProxyService : IHostedService, IDisposable
         _proxy.Start(changeSystemProxySettings: false);
         IsRunning = true;
         _logger.LogInformation("MiniFiddler proxy listening on 127.0.0.1:{Port}", Port);
+
+        // If a previous run left the system proxy enabled (e.g. abnormal exit), reflect
+        // that in our state so the UI is accurate and the user can disable it.
+        ReconcileSystemProxyState();
+
+        // Backstop: ensure the system proxy is restored if the process exits via a path
+        // the host's StopAsync doesn't cover (best-effort; a hard kill can't be caught).
+        AppDomain.CurrentDomain.ProcessExit += OnProcessExit;
         return Task.CompletedTask;
+    }
+
+    private void OnProcessExit(object? sender, EventArgs e)
+    {
+        try { if (SystemProxyEnabled) _proxy.DisableAllSystemProxies(); }
+        catch { /* best-effort cleanup */ }
     }
 
     public Task StopAsync(CancellationToken cancellationToken)
     {
         try
         {
+            AppDomain.CurrentDomain.ProcessExit -= OnProcessExit;
             if (SystemProxyEnabled) DisableSystemProxy();
             if (IsRunning)
             {
