@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MiniFiddler — HTTP(S) Capture</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header class="toolbar">
+    <div class="brand">🐟 MiniFiddler</div>
+
+    <div class="controls">
+      <button id="btnCapture" class="btn" title="Pause/resume recording">⏸ Pause</button>
+      <button id="btnClear" class="btn" title="Clear all captured sessions">🗑 Clear</button>
+      <span class="divider"></span>
+      <button id="btnSysProxy" class="btn" title="Route all machine traffic through this proxy">🌐 System Proxy: Off</button>
+      <button id="btnCertInstall" class="btn" title="Trust the root certificate (enables HTTPS decryption)">🔒 Trust Cert</button>
+      <a id="btnCertDownload" class="btn" href="/api/cert" download title="Download root certificate (.cer)">⬇ Cert</a>
+    </div>
+
+    <div class="status" id="status">connecting…</div>
+  </header>
+
+  <div class="filters">
+    <input id="search" type="search" placeholder="Filter by URL, host, method, status…" />
+    <label class="chk"><input type="checkbox" id="onlyErrors" /> Errors only</label>
+    <span id="count" class="count">0</span>
+  </div>
+
+  <main class="layout">
+    <section class="list">
+      <table id="table">
+        <thead>
+          <tr>
+            <th class="c-idx">#</th>
+            <th class="c-clock">Time</th>
+            <th class="c-method">Method<input class="col-filter" data-col="method" placeholder="filter" /></th>
+            <th class="c-status">Status<input class="col-filter" data-col="status" placeholder="filter" /></th>
+            <th class="c-host">Host<input class="col-filter" data-col="host" placeholder="filter" /></th>
+            <th class="c-path">Path<input class="col-filter" data-col="path" placeholder="filter" /></th>
+            <th class="c-type">Type<input class="col-filter" data-col="type" placeholder="filter" /></th>
+            <th class="c-size">Size</th>
+            <th class="c-time">Duration</th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <div id="empty" class="empty">
+        No traffic yet. Trust the cert, enable <b>System Proxy</b> (or point an app at
+        <code>http://127.0.0.1:8888</code>), then browse.
+      </div>
+    </section>
+
+    <section class="detail" id="detail">
+      <div class="detail-empty">Select a request to inspect it.</div>
+    </section>
+  </main>
+
+  <script src="/lib/signalr.min.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,94 @@
+# MiniFiddler
+
+A lightweight, Fiddler-like HTTP(S) capture tool for Windows. It runs a local
+man-in-the-middle proxy and shows every outgoing request in a clean, readable
+web UI — where it's going, full headers, and decoded request/response bodies.
+
+> ⚠️ **Responsible use.** MiniFiddler decrypts HTTPS by installing a local root
+> CA, so it can read traffic that is normally encrypted. Use it **only on machines
+> you own and to inspect your own traffic.** Intercepting other people's traffic
+> may be illegal. The CA is installed only into your *CurrentUser* store and never
+> machine-wide; untrust it when you're done.
+
+## Features
+- Capture **all outgoing HTTP and HTTPS** traffic from the machine (via system proxy)
+- **HTTPS decryption** using a locally-generated, trusted root CA (like Fiddler)
+- Live request list: timestamp, method, status, host, path, content-type, size, timing
+- Detail tabs: **Overview / Request / Response / Raw**, with pretty-printed JSON
+- Global search, **per-column filters** (method/status/host/path/type), "errors only" filter, pause/resume, clear
+- **Copy as cURL**
+- In-memory ring buffer (last 5000 requests) — nothing written to disk
+
+## Requirements
+- .NET SDK 10
+- Windows (uses the WinINET system proxy + Windows cert store)
+
+## Run
+```powershell
+cd MiniFiddler
+dotnet run
+```
+Then open the UI: <http://127.0.0.1:5266>
+
+The proxy listens on `127.0.0.1:8888`. The web UI is on `127.0.0.1:5266`.
+
+## How to capture traffic
+1. Open the UI and click **Trust Cert** (installs the root CA into your
+   *CurrentUser* store so HTTPS can be decrypted). You can also click **⬇ Cert**
+   to download the `.cer` and inspect/import it manually.
+2. Either:
+   - Click **System Proxy: Off → On** to route the whole machine through MiniFiddler, **or**
+   - Point a single app at `http://127.0.0.1:8888` (e.g.
+     `Invoke-WebRequest <url> -Proxy http://127.0.0.1:8888`).
+3. Generate traffic and watch it appear live. Click a row to inspect it.
+
+When you're done, click **System Proxy: On → Off**. The proxy and system-proxy
+settings are also restored automatically when the app exits.
+
+## Security notes
+- The root CA can decrypt **your** HTTPS traffic. Install/remove is **explicit and
+  reversible** (Trust Cert button → uninstall via `POST /api/cert/uninstall`).
+  The cert is only ever placed in the CurrentUser store, never silently machine-wide.
+- **CA private key is protected.** It is stored under
+  `%LOCALAPPDATA%\MiniFiddler\` in a directory whose ACL is restricted to your user
+  account + SYSTEM (inheritance disabled), encrypted with a random 32-byte password
+  that is itself DPAPI-protected (CurrentUser scope). It is **not** the old
+  unencrypted, world-readable pfx in the build folder.
+- **Upstream certificates are validated.** The proxy→server leg rejects invalid/
+  untrusted server certificates instead of blindly trusting them, so it can't be
+  silently MITM'd between you and the real site.
+- **Loopback API is hardened** against malicious web pages: requests to `/api` and
+  `/hub` must carry an expected `Host` header (blocks DNS-rebinding) and state-changing
+  requests (POST/PUT/DELETE/PATCH) must carry an allowed `Origin` (blocks CSRF).
+  Note: other *native* processes on this machine can still reach the loopback API —
+  that is inherent to any local loopback service (Fiddler included).
+- When you're done, click **Disable** on the system proxy and **uninstall** the CA so
+  the machine isn't left able to decrypt your HTTPS.
+- Apps that ignore the system proxy or use certificate pinning won't be
+  captured/decrypted — the same limitation Fiddler has.
+
+## Architecture
+A single ASP.NET Core process hosts:
+- **ProxyService** — wraps [`Titanium.Web.Proxy`](https://github.com/justcoding121/titanium-web-proxy);
+  generates/trusts the CA, intercepts requests/responses, decodes gzip/deflate/brotli.
+- **SessionStore** — thread-safe capped in-memory store.
+- **CaptureHub** (SignalR) — pushes captures to the browser in real time.
+- **REST API** — `/api/sessions`, `/api/status`, `/api/clear`, `/api/cert*`, `/api/system-proxy`.
+- **Static web UI** — `wwwroot/` (vanilla JS, no build step).
+
+## API quick reference
+| Method | Route | Purpose |
+|--------|-------|---------|
+| GET | `/api/status` | Proxy/cert/system-proxy state + counts |
+| GET | `/api/sessions` | List captured request summaries |
+| GET | `/api/sessions/{id}` | Full session incl. bodies |
+| POST | `/api/clear` | Clear all captures |
+| POST | `/api/capture` | `{ "enabled": true|false }` pause/resume |
+| GET | `/api/cert` | Download root CA (`.cer`) |
+| POST | `/api/cert/install` / `/api/cert/uninstall` | Trust / untrust the root CA |
+| POST | `/api/system-proxy` | `{ "enabled": true|false }` toggle system proxy |
+
+## License
+
+Licensed under the [MIT License](LICENSE). Third-party components and their
+licenses are listed in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
