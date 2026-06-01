@@ -177,8 +177,8 @@ thead th { vertical-align: top; }
 .section-title { color: var(--text-dim); font-size: 11px; text-transform: uppercase; letter-spacing: .5px; margin: 4px 0 8px; }
 
 .headers { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 12px; }
-.headers td { padding: 3px 8px; vertical-align: top; border-bottom: 1px solid #2a2a2a; white-space: normal; word-break: break-all; }
-.headers td.k { color: var(--blue); width: 1%; white-space: nowrap; padding-right: 16px; }
+.headers td { padding: 3px 8px; vertical-align: top; border-bottom: 1px solid #2a2a2a; white-space: normal; word-break: break-all; overflow: visible; text-overflow: clip; max-width: none; }
+.headers td.k { color: var(--blue); width: 1%; white-space: nowrap; word-break: normal; padding-right: 16px; }
 
 pre.body {
   margin: 0; padding: 12px;
