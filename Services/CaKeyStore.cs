@@ -16,6 +16,7 @@ public static class CaKeyStore
         "MiniFiddler");
 
     public static string PfxPath => Path.Combine(Directory, "rootCert.pfx");
+    public static string CaPemPath => Path.Combine(Directory, "rootCert.pem");
     private static string PasswordPath => Path.Combine(Directory, "pfx.secret");
 
     /// <summary>Creates the directory (locked to the current user) and returns the CA password.</summary>

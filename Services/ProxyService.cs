@@ -54,14 +54,160 @@ public sealed class ProxyService : IHostedService, IDisposable
     public void TrustCertificate() => _proxy.CertificateManager.TrustRootCertificate(machineTrusted: false);
     public void UntrustCertificate() => _proxy.CertificateManager.RemoveTrustedRootCertificate(machineTrusted: false);
 
+    private void ExportCaPem()
+    {
+        try
+        {
+            var cert = _proxy.CertificateManager.RootCertificate;
+            if (cert is null) return;
+            File.WriteAllText(CaKeyStore.CaPemPath, cert.ExportCertificatePem());
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not export CA certificate as PEM for NODE_EXTRA_CA_CERTS");
+        }
+    }
+
     // ---- System proxy helpers ---------------------------------------------
+
+    // Registry key where we back up the user's original env var values before overwriting them.
+    // Presence of this key acts as a sentinel that MiniFiddler owns the current values.
+    private const string EnvBackupRegKey = @"Software\MiniFiddler\EnvBackup";
+    private const string HkcuEnvironmentKey = @"Environment";
+    private static readonly string[] ManagedEnvVars = ["HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "NODE_EXTRA_CA_CERTS"];
+
     public void EnableSystemProxy()
     {
         if (_endPoint is null) return;
         _proxy.SetAsSystemProxy(_endPoint, ProxyProtocolType.AllHttp);
         SetLocalBypass();
+        SetProxyEnvVars();
         SystemProxyEnabled = true;
         _logger.LogInformation("System proxy enabled on 127.0.0.1:{Port} (loopback bypassed)", Port);
+    }
+
+    /// <summary>
+    /// Sets HTTP_PROXY, HTTPS_PROXY, NO_PROXY, and NODE_EXTRA_CA_CERTS in HKCU\Environment so
+    /// non-WinInet clients (Node.js / VS Code extensions, curl, Python, etc.) also route through
+    /// the proxy. The original values are backed up to a MiniFiddler-owned registry key so they
+    /// can be restored on disable — including after a crash, via ReconcileEnvVarState.
+    /// </summary>
+    private void SetProxyEnvVars()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        try
+        {
+            var proxyUrl = $"http://127.0.0.1:{Port}";
+
+            // Save originals only on the first call; skip if the backup key already exists,
+            // meaning we still hold the real originals from a previous enable.
+            using (var existingBackup = Registry.CurrentUser.OpenSubKey(EnvBackupRegKey, writable: false))
+            {
+                if (existingBackup is null)
+                {
+                    using var envKey = Registry.CurrentUser.OpenSubKey(HkcuEnvironmentKey, writable: false);
+                    using var backup = Registry.CurrentUser.CreateSubKey(EnvBackupRegKey, writable: true);
+                    foreach (var name in ManagedEnvVars)
+                    {
+                        var existing = envKey?.GetValue(name) as string;
+                        if (existing is not null)
+                            backup.SetValue(name, existing, RegistryValueKind.String);
+                    }
+                    // Written last: ClearProxyEnvVars uses this to detect a partial write after crash.
+                    backup.SetValue("_written", "1", RegistryValueKind.String);
+                }
+            }
+
+            var pemSet = File.Exists(CaKeyStore.CaPemPath);
+            using (var envKey = Registry.CurrentUser.CreateSubKey(HkcuEnvironmentKey, writable: true))
+            {
+                envKey.SetValue("HTTP_PROXY", proxyUrl, RegistryValueKind.String);
+                envKey.SetValue("HTTPS_PROXY", proxyUrl, RegistryValueKind.String);
+                envKey.SetValue("NO_PROXY", "localhost,127.0.0.1,::1", RegistryValueKind.String);
+                if (pemSet)
+                    envKey.SetValue("NODE_EXTRA_CA_CERTS", CaKeyStore.CaPemPath, RegistryValueKind.String);
+            }
+
+            BroadcastEnvironmentChange();
+            _logger.LogInformation("Set proxy environment variables (HTTP_PROXY, HTTPS_PROXY, NO_PROXY{NodeCa})",
+                pemSet ? ", NODE_EXTRA_CA_CERTS" : "");
+            if (!pemSet)
+                _logger.LogWarning("CA PEM not found at {Path}; NODE_EXTRA_CA_CERTS was not set — Node.js HTTPS interception will not work",
+                    CaKeyStore.CaPemPath);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not set proxy environment variables");
+        }
+    }
+
+    /// <summary>
+    /// Restores the user's original env var values (or removes them if they were absent before)
+    /// and deletes the MiniFiddler backup key.
+    /// </summary>
+    private void ClearProxyEnvVars()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        try
+        {
+            bool restored;
+            using (var backup = Registry.CurrentUser.OpenSubKey(EnvBackupRegKey, writable: false))
+            {
+                if (backup is null) return; // We never set these env vars; nothing to restore.
+
+                // Partial-write guard: if the completion marker is missing, a crash occurred between
+                // CreateSubKey and the first SetValue. The env vars were never changed — don't delete
+                // anything; just clean up the orphaned backup key below.
+                if (backup.GetValue("_written") is null)
+                {
+                    restored = false;
+                }
+                else
+                {
+                    using var envKey = Registry.CurrentUser.CreateSubKey(HkcuEnvironmentKey, writable: true);
+                    foreach (var name in ManagedEnvVars)
+                    {
+                        var saved = backup.GetValue(name) as string;
+                        if (saved is not null)
+                            envKey.SetValue(name, saved, RegistryValueKind.String);
+                        else
+                            envKey.DeleteValue(name, throwOnMissingValue: false);
+                    }
+                    restored = true;
+                }
+            } // backup handle must be closed before DeleteSubKey
+
+            Registry.CurrentUser.DeleteSubKey(EnvBackupRegKey, throwOnMissingSubKey: false);
+
+            if (restored)
+            {
+                BroadcastEnvironmentChange();
+                _logger.LogInformation("Restored proxy environment variables");
+            }
+            else
+            {
+                _logger.LogWarning("Discarded incomplete proxy env var backup (partial write before crash); env vars were not changed");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not restore proxy environment variables");
+        }
+    }
+
+    [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = false)]
+    private static extern IntPtr SendMessageTimeout(
+        IntPtr hWnd, uint Msg, IntPtr wParam, string lParam,
+        uint fuFlags, uint uTimeout, out IntPtr lpdwResult);
+
+    private const int HWND_BROADCAST = 0xffff;
+    private const uint WM_SETTINGCHANGE = 0x001A;
+    private const uint SMTO_ABORTIFHUNG = 0x0002;
+
+    private static void BroadcastEnvironmentChange()
+    {
+        SendMessageTimeout(new IntPtr(HWND_BROADCAST), WM_SETTINGCHANGE,
+            IntPtr.Zero, "Environment", SMTO_ABORTIFHUNG, 1000, out _);
     }
 
     /// <summary>
@@ -94,6 +240,7 @@ public sealed class ProxyService : IHostedService, IDisposable
     public void DisableSystemProxy()
     {
         _proxy.DisableAllSystemProxies();
+        ClearProxyEnvVars();
         SystemProxyEnabled = false;
         _logger.LogInformation("System proxy disabled");
     }
@@ -124,12 +271,48 @@ public sealed class ProxyService : IHostedService, IDisposable
                 _logger.LogWarning(
                     "Detected a leftover system proxy from a previous session (ProxyServer={Server}). " +
                     "Reflecting it as enabled; it will be disabled on clean shutdown or via the UI.", server);
+
+            ReconcileEnvVarState();
             return SystemProxyEnabled;
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Could not read system proxy state");
             return false;
+        }
+    }
+
+    /// <summary>
+    /// Checks whether our env var backup key is present (i.e. MiniFiddler owns the current env
+    /// vars) and reconciles that with the proxy-enabled state. If the proxy is off but env vars
+    /// were left behind by a crash, they are cleaned up now.
+    /// </summary>
+    private void ReconcileEnvVarState()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        try
+        {
+            using var backup = Registry.CurrentUser.OpenSubKey(EnvBackupRegKey, writable: false);
+            if (backup is null) return; // No backup key — we don't own the env vars.
+
+            if (SystemProxyEnabled)
+            {
+                // Proxy is still active; re-apply env vars in case they were manually removed between sessions.
+                _logger.LogWarning(
+                    "Leftover proxy environment variables detected from previous session — re-applying (proxy is still active).");
+                SetProxyEnvVars();
+            }
+            else
+            {
+                // Proxy was turned off or belongs to another app; env vars are stale — clean up.
+                _logger.LogWarning(
+                    "Leftover proxy environment variables detected from previous session — clearing them.");
+                ClearProxyEnvVars();
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not reconcile proxy environment variable state");
         }
     }
 
@@ -146,6 +329,7 @@ public sealed class ProxyService : IHostedService, IDisposable
         _proxy.CertificateManager.RootCertificateName = "MiniFiddler Root CA";
         _proxy.CertificateManager.RootCertificateIssuerName = "MiniFiddler";
         _proxy.CertificateManager.EnsureRootCertificate();
+        ExportCaPem(); // Write PEM so NODE_EXTRA_CA_CERTS can point at it
 
         _endPoint = new ExplicitProxyEndPoint(IPAddress.Loopback, Port, decryptSsl: true);
         _proxy.AddEndPoint(_endPoint);
@@ -171,6 +355,8 @@ public sealed class ProxyService : IHostedService, IDisposable
     private void OnProcessExit(object? sender, EventArgs e)
     {
         try { if (SystemProxyEnabled) _proxy.DisableAllSystemProxies(); }
+        catch { /* best-effort cleanup */ }
+        try { ClearProxyEnvVars(); }
         catch { /* best-effort cleanup */ }
     }
 
