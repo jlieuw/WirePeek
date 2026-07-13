@@ -1,12 +1,11 @@
 name: Publish to NuGet
 
 # Publishes WirePeek to nuget.org using Trusted Publishing (OIDC) — no stored
-# API key. Push a version tag (e.g. `v0.1.1`) to release that version, or run
-# manually via the Actions tab with an optional version override.
+# API key. Publishing a GitHub Release (e.g. tag `v0.1.1`) releases that version,
+# or run manually via the Actions tab with an optional version override.
 on:
-  push:
-    tags:
-      - 'v*.*.*'
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       version:
@@ -32,9 +31,8 @@ jobs:
         shell: pwsh
         run: |
           $v = '${{ github.event.inputs.version }}'
-          if (-not $v -and '${{ github.ref_type }}' -eq 'tag') {
-            $v = '${{ github.ref_name }}' -replace '^v', ''
-          }
+          if (-not $v) { $v = '${{ github.event.release.tag_name }}' }
+          $v = $v -replace '^v', ''
           "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: Pack
