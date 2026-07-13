@@ -20,10 +20,22 @@ web UI — where it's going, full headers, and decoded request/response bodies.
 - In-memory ring buffer (last 5000 requests) — nothing written to disk
 
 ## Requirements
-- .NET SDK 10
+- .NET SDK 10 (the runtime ships with the SDK, so `dotnet tool` users need it too)
 - Windows (uses the WinINET system proxy + Windows cert store)
 
-## Run
+## Install
+WirePeek is published as a .NET global tool:
+```powershell
+dotnet tool install --global WirePeek
+```
+Then launch it from anywhere:
+```powershell
+wirepeek
+```
+Update with `dotnet tool update --global WirePeek`; remove with
+`dotnet tool uninstall --global WirePeek`.
+
+## Run from source
 ```powershell
 cd WirePeek
 dotnet run

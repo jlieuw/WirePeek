@@ -1,3 +1,4 @@
+using Microsoft.Extensions.FileProviders;
 using WirePeek.Hubs;
 using WirePeek.Services;
 
@@ -58,8 +59,15 @@ app.Use(async (ctx, next) =>
     await next();
 });
 
-app.UseDefaultFiles();
-app.UseStaticFiles();
+// The UI is embedded in the assembly so the app works when installed as a dotnet
+// tool (where there is no wwwroot on disk next to the working directory). During
+// development, serve from the physical wwwroot so edits show up without a rebuild.
+var devWwwroot = Path.Combine(app.Environment.ContentRootPath, "wwwroot");
+IFileProvider uiFiles = app.Environment.IsDevelopment() && Directory.Exists(devWwwroot)
+    ? new PhysicalFileProvider(devWwwroot)
+    : new ManifestEmbeddedFileProvider(typeof(Program).Assembly, "wwwroot");
+app.UseDefaultFiles(new DefaultFilesOptions { FileProvider = uiFiles });
+app.UseStaticFiles(new StaticFileOptions { FileProvider = uiFiles });
 
 var proxy = app.Services.GetRequiredService<ProxyService>();
 // Don't record the UI's own traffic if it ever routes through the proxy.
