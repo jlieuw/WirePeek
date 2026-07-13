@@ -53,8 +53,10 @@ jobs:
 
       - name: Push
         shell: pwsh
-        run: >
-          dotnet nuget push artifacts/*.nupkg
-          --api-key ${{ steps.login.outputs.NUGET_API_KEY }}
-          --source https://api.nuget.org/v3/index.json
-          --skip-duplicate
+        run: |
+          $pkg = Get-ChildItem artifacts/*.nupkg | Select-Object -First 1
+          if (-not $pkg) { throw "No .nupkg found in artifacts/" }
+          dotnet nuget push $pkg.FullName `
+            --api-key ${{ steps.login.outputs.NUGET_API_KEY }} `
+            --source https://api.nuget.org/v3/index.json `
+            --skip-duplicate
