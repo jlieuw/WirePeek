@@ -106,6 +106,30 @@ A single ASP.NET Core process hosts:
 | POST | `/api/cert/install` / `/api/cert/uninstall` | Trust / untrust the root CA |
 | POST | `/api/system-proxy` | `{ "enabled": true|false }` toggle system proxy |
 
+## Releasing
+
+Releases publish to [nuget.org](https://www.nuget.org/packages/WirePeek) via the
+[`.github/workflows/publish.yml`](.github/workflows/publish.yml) workflow, which uses
+**Trusted Publishing (OIDC)** — no API key is stored in the repo. One-time setup:
+
+1. On nuget.org → your username → **Trusted Publishing**, add a policy:
+   - **Repository Owner:** `jlieuw`
+   - **Repository:** `WirePeek`
+   - **Workflow File:** `publish.yml`
+   - **Environment:** *(leave blank)*
+2. In GitHub → repo **Settings → Secrets and variables → Actions**, add a secret
+   `NUGET_USER` set to your nuget.org **username** (profile name, not your email).
+
+Then release by pushing a version tag:
+```powershell
+git tag v0.1.0
+git push origin v0.1.0
+```
+The workflow packs `WirePeek` at that version and pushes it. (First publish of a
+private repo's policy is provisionally active for 7 days until the first successful
+push locks it to the repo — see the nuget.org docs.) You can also trigger it manually
+from the **Actions** tab with an optional version override.
+
 ## License
 
 Licensed under the [MIT License](LICENSE). Third-party components and their
