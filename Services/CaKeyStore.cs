@@ -2,7 +2,7 @@ using System.Security.AccessControl;
 using System.Security.Cryptography;
 using System.Security.Principal;
 
-namespace MiniFiddler.Services;
+namespace WirePeek.Services;
 
 /// <summary>
 /// Provides a per-user, access-restricted location for the proxy's root CA private key
@@ -13,7 +13,7 @@ public static class CaKeyStore
 {
     public static string Directory { get; } = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "MiniFiddler");
+        "WirePeek");
 
     public static string PfxPath => Path.Combine(Directory, "rootCert.pfx");
     public static string CaPemPath => Path.Combine(Directory, "rootCert.pem");

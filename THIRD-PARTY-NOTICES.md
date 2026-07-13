@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-MiniFiddler includes and depends on the following third-party components. All are
+WirePeek includes and depends on the following third-party components. All are
 used under permissive licenses compatible with this project's MIT license.
 
 ## Bundled in this repository

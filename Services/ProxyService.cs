@@ -2,13 +2,13 @@ using System.Net;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography.X509Certificates;
 using Microsoft.Win32;
-using MiniFiddler.Hubs;
-using MiniFiddler.Models;
+using WirePeek.Hubs;
+using WirePeek.Models;
 using Titanium.Web.Proxy;
 using Titanium.Web.Proxy.EventArguments;
 using Titanium.Web.Proxy.Models;
 
-namespace MiniFiddler.Services;
+namespace WirePeek.Services;
 
 public sealed class ProxyService : IHostedService, IDisposable
 {
@@ -49,7 +49,7 @@ public sealed class ProxyService : IHostedService, IDisposable
         return cert.Export(X509ContentType.Cert);
     }
 
-    public string RootCertificateName => _proxy.CertificateManager.RootCertificateName ?? "MiniFiddler Root";
+    public string RootCertificateName => _proxy.CertificateManager.RootCertificateName ?? "WirePeek Root";
 
     public void TrustCertificate() => _proxy.CertificateManager.TrustRootCertificate(machineTrusted: false);
     public void UntrustCertificate() => _proxy.CertificateManager.RemoveTrustedRootCertificate(machineTrusted: false);
@@ -71,8 +71,8 @@ public sealed class ProxyService : IHostedService, IDisposable
     // ---- System proxy helpers ---------------------------------------------
 
     // Registry key where we back up the user's original env var values before overwriting them.
-    // Presence of this key acts as a sentinel that MiniFiddler owns the current values.
-    private const string EnvBackupRegKey = @"Software\MiniFiddler\EnvBackup";
+    // Presence of this key acts as a sentinel that WirePeek owns the current values.
+    private const string EnvBackupRegKey = @"Software\WirePeek\EnvBackup";
     private const string HkcuEnvironmentKey = @"Environment";
     private static readonly string[] ManagedEnvVars = ["HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "NODE_EXTRA_CA_CERTS"];
 
@@ -89,7 +89,7 @@ public sealed class ProxyService : IHostedService, IDisposable
     /// <summary>
     /// Sets HTTP_PROXY, HTTPS_PROXY, NO_PROXY, and NODE_EXTRA_CA_CERTS in HKCU\Environment so
     /// non-WinInet clients (Node.js / VS Code extensions, curl, Python, etc.) also route through
-    /// the proxy. The original values are backed up to a MiniFiddler-owned registry key so they
+    /// the proxy. The original values are backed up to a WirePeek-owned registry key so they
     /// can be restored on disable — including after a crash, via ReconcileEnvVarState.
     /// </summary>
     private void SetProxyEnvVars()
@@ -143,7 +143,7 @@ public sealed class ProxyService : IHostedService, IDisposable
 
     /// <summary>
     /// Restores the user's original env var values (or removes them if they were absent before)
-    /// and deletes the MiniFiddler backup key.
+    /// and deletes the WirePeek backup key.
     /// </summary>
     private void ClearProxyEnvVars()
     {
@@ -283,7 +283,7 @@ public sealed class ProxyService : IHostedService, IDisposable
     }
 
     /// <summary>
-    /// Checks whether our env var backup key is present (i.e. MiniFiddler owns the current env
+    /// Checks whether our env var backup key is present (i.e. WirePeek owns the current env
     /// vars) and reconciles that with the proxy-enabled state. If the proxy is off but env vars
     /// were left behind by a crash, they are cleaned up now.
     /// </summary>
@@ -326,8 +326,8 @@ public sealed class ProxyService : IHostedService, IDisposable
         _proxy.CertificateManager.PfxFilePath = CaKeyStore.PfxPath;
         _proxy.CertificateManager.PfxPassword = pfxPassword;
 
-        _proxy.CertificateManager.RootCertificateName = "MiniFiddler Root CA";
-        _proxy.CertificateManager.RootCertificateIssuerName = "MiniFiddler";
+        _proxy.CertificateManager.RootCertificateName = "WirePeek Root CA";
+        _proxy.CertificateManager.RootCertificateIssuerName = "WirePeek";
         _proxy.CertificateManager.EnsureRootCertificate();
         ExportCaPem(); // Write PEM so NODE_EXTRA_CA_CERTS can point at it
 
@@ -340,7 +340,7 @@ public sealed class ProxyService : IHostedService, IDisposable
 
         _proxy.Start(changeSystemProxySettings: false);
         IsRunning = true;
-        _logger.LogInformation("MiniFiddler proxy listening on 127.0.0.1:{Port}", Port);
+        _logger.LogInformation("WirePeek proxy listening on 127.0.0.1:{Port}", Port);
 
         // If a previous run left the system proxy enabled (e.g. abnormal exit), reflect
         // that in our state so the UI is accurate and the user can disable it.

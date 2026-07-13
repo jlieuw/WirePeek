@@ -1,4 +1,4 @@
-namespace MiniFiddler.Models;
+namespace WirePeek.Models;
 
 public sealed class HeaderItem
 {

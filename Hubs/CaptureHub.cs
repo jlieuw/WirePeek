@@ -1,7 +1,7 @@
 using Microsoft.AspNetCore.SignalR;
-using MiniFiddler.Models;
+using WirePeek.Models;
 
-namespace MiniFiddler.Hubs;
+namespace WirePeek.Hubs;
 
 /// <summary>SignalR hub that pushes live capture updates to connected browsers.</summary>
 public sealed class CaptureHub : Hub

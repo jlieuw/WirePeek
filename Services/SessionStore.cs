@@ -1,7 +1,7 @@
 using System.Collections.Concurrent;
-using MiniFiddler.Models;
+using WirePeek.Models;
 
-namespace MiniFiddler.Services;
+namespace WirePeek.Services;
 
 /// <summary>
 /// Thread-safe, capped in-memory store of captured sessions (ring buffer semantics).

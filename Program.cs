@@ -1,5 +1,5 @@
-using MiniFiddler.Hubs;
-using MiniFiddler.Services;
+using WirePeek.Hubs;
+using WirePeek.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -106,7 +106,7 @@ app.MapGet("/api/cert", (ProxyService p) =>
     try
     {
         var bytes = p.ExportRootCertificate();
-        return Results.File(bytes, "application/x-x509-ca-cert", "MiniFiddlerRoot.cer");
+        return Results.File(bytes, "application/x-x509-ca-cert", "WirePeekRoot.cer");
     }
     catch (Exception ex)
     {

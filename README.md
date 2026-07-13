@@ -1,10 +1,10 @@
-# MiniFiddler
+# WirePeek
 
 A lightweight, Fiddler-like HTTP(S) capture tool for Windows. It runs a local
 man-in-the-middle proxy and shows every outgoing request in a clean, readable
 web UI — where it's going, full headers, and decoded request/response bodies.
 
-> ⚠️ **Responsible use.** MiniFiddler decrypts HTTPS by installing a local root
+> ⚠️ **Responsible use.** WirePeek decrypts HTTPS by installing a local root
 > CA, so it can read traffic that is normally encrypted. Use it **only on machines
 > you own and to inspect your own traffic.** Intercepting other people's traffic
 > may be illegal. The CA is installed only into your *CurrentUser* store and never
@@ -25,7 +25,7 @@ web UI — where it's going, full headers, and decoded request/response bodies.
 
 ## Run
 ```powershell
-cd MiniFiddler
+cd WirePeek
 dotnet run
 ```
 Then open the UI: <http://127.0.0.1:5266>
@@ -37,7 +37,7 @@ The proxy listens on `127.0.0.1:8888`. The web UI is on `127.0.0.1:5266`.
    *CurrentUser* store so HTTPS can be decrypted). You can also click **⬇ Cert**
    to download the `.cer` and inspect/import it manually.
 2. Either:
-   - Click **System Proxy: Off → On** to route the whole machine through MiniFiddler, **or**
+   - Click **System Proxy: Off → On** to route the whole machine through WirePeek, **or**
    - Point a single app at `http://127.0.0.1:8888` (e.g.
      `Invoke-WebRequest <url> -Proxy http://127.0.0.1:8888`).
 3. Generate traffic and watch it appear live. Click a row to inspect it.
@@ -50,7 +50,7 @@ settings are also restored automatically when the app exits.
   reversible** (Trust Cert button → uninstall via `POST /api/cert/uninstall`).
   The cert is only ever placed in the CurrentUser store, never silently machine-wide.
 - **CA private key is protected.** It is stored under
-  `%LOCALAPPDATA%\MiniFiddler\` in a directory whose ACL is restricted to your user
+  `%LOCALAPPDATA%\WirePeek\` in a directory whose ACL is restricted to your user
   account + SYSTEM (inheritance disabled), encrypted with a random 32-byte password
   that is itself DPAPI-protected (CurrentUser scope). It is **not** the old
   unencrypted, world-readable pfx in the build folder.
@@ -64,10 +64,10 @@ settings are also restored automatically when the app exits.
   that is inherent to any local loopback service (Fiddler included).
 - When you're done, click **Disable** on the system proxy and **uninstall** the CA so
   the machine isn't left able to decrypt your HTTPS.
-- **Abnormal-exit recovery.** On a clean shutdown (or Ctrl+C) MiniFiddler restores the
+- **Abnormal-exit recovery.** On a clean shutdown (or Ctrl+C) WirePeek restores the
   Windows proxy automatically. If the process is *hard-killed* (e.g. `Stop-Process -Force`,
   power loss), the OS can't run cleanup, so the system proxy may stay enabled in the
-  registry. MiniFiddler detects this on the next launch: it reconciles its state with the
+  registry. WirePeek detects this on the next launch: it reconciles its state with the
   registry, shows the proxy as **On**, and disables it on clean shutdown or when you click
   **Disable**. (Fiddler has the same inherent limitation and likewise reconciles on launch.)
 - Apps that ignore the system proxy or use certificate pinning won't be
