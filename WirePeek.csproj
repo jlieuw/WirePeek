@@ -9,7 +9,7 @@
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>wirepeek</ToolCommandName>
     <PackageId>WirePeek</PackageId>
-    <Version>0.1.0</Version>
+    <Version>0.2.0</Version>
     <Authors>jlieuw</Authors>
     <Description>A lightweight, Fiddler-like HTTP(S) capture tool for Windows. Runs a local MITM proxy and shows every outgoing request in a live web UI: full headers and decoded request/response bodies.</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
