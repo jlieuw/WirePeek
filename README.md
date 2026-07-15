@@ -43,6 +43,11 @@ dotnet run
 Then open the UI: <http://127.0.0.1:5266>
 
 The proxy listens on `127.0.0.1:8888`. The web UI is on `127.0.0.1:5266`.
+Both ports can be changed:
+```powershell
+dotnet run -- --ui-port 5300 --proxy-port 9999   # from source
+wirepeek --ui-port 5300 --proxy-port 9999        # installed tool
+```
 
 ## How to capture traffic
 1. Open the UI and click **Trust Cert** (installs the root CA into your
