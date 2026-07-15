@@ -1,18 +1,42 @@
 :root {
+  color-scheme: dark;
   --bg: #1e1e1e;
   --bg-2: #252526;
   --bg-3: #2d2d30;
   --border: #3c3c3c;
+  --row-border: #2a2a2a;
   --text: #d4d4d4;
   --text-dim: #969696;
   --accent: #0e639c;
   --accent-hover: #1177bb;
+  --accent-fg: #ffffff;
+  --on: #2d6a4f;
   --sel: #094771;
   --green: #4ec9b0;
   --yellow: #d7ba7d;
   --red: #f48771;
   --blue: #569cd6;
   --mono: "Cascadia Code", "Consolas", "SF Mono", monospace;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #ffffff;
+  --bg-2: #f3f3f3;
+  --bg-3: #ececec;
+  --border: #c8c8c8;
+  --row-border: #e5e5e5;
+  --text: #1f1f1f;
+  --text-dim: #6e6e6e;
+  --accent: #007acc;
+  --accent-hover: #0062a3;
+  --accent-fg: #ffffff;
+  --on: #2f855a;
+  --sel: #add6ff;
+  --green: #098658;
+  --yellow: #a26a00;
+  --red: #cd3131;
+  --blue: #0451a5;
 }
 
 * { box-sizing: border-box; }
@@ -55,9 +79,9 @@ body { display: flex; flex-direction: column; height: 100vh; }
   text-decoration: none;
   white-space: nowrap;
 }
-.btn:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
-.btn.active { background: var(--accent); border-color: var(--accent); }
-.btn.on { background: #2d6a4f; border-color: #2d6a4f; }
+.btn:hover { background: var(--accent-hover); border-color: var(--accent-hover); color: var(--accent-fg); }
+.btn.active { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+.btn.on { background: var(--on); border-color: var(--on); color: var(--accent-fg); }
 
 /* Filters */
 .filters {
@@ -98,7 +122,7 @@ thead th {
 }
 tbody td {
   padding: 4px 8px;
-  border-bottom: 1px solid #2a2a2a;
+  border-bottom: 1px solid var(--row-border);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -177,7 +201,7 @@ thead th { vertical-align: top; }
 .section-title { color: var(--text-dim); font-size: 11px; text-transform: uppercase; letter-spacing: .5px; margin: 4px 0 8px; }
 
 .headers { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 12px; }
-.headers td { padding: 3px 8px; vertical-align: top; border-bottom: 1px solid #2a2a2a; white-space: normal; word-break: break-all; overflow: visible; text-overflow: clip; max-width: none; }
+.headers td { padding: 3px 8px; vertical-align: top; border-bottom: 1px solid var(--row-border); white-space: normal; word-break: break-all; overflow: visible; text-overflow: clip; max-width: none; }
 .headers td.k { color: var(--blue); width: 1%; white-space: nowrap; word-break: normal; padding-right: 16px; }
 
 pre.body {
