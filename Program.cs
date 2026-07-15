@@ -1,10 +1,30 @@
+using System.Net;
+using System.Net.Sockets;
 using Microsoft.Extensions.FileProviders;
 using WirePeek.Hubs;
 using WirePeek.Services;
 
+var (options, parseError) = CliOptions.Parse(args);
+if (parseError is not null) return Fail(parseError);
+if (options!.ShowHelp)
+{
+    Console.WriteLine(CliOptions.HelpText);
+    return 0;
+}
+var (uiPort, proxyPort) = (options.UiPort, options.ProxyPort);
+
+// Fail fast with a clear message instead of a mid-startup stack trace. (A race with
+// another process grabbing the port after this check is possible but acceptable here.)
+foreach (var (port, what, flag) in new[] { (uiPort, "web UI", "--ui-port"), (proxyPort, "capture proxy", "--proxy-port") })
+{
+    if (!IsPortFree(port))
+        return Fail($"Port {port} (the {what} port) is already in use — is another WirePeek instance running? " +
+                    $"Pick a different port with {flag} <port>.");
+}
+
 var builder = WebApplication.CreateBuilder(args);
 
-builder.WebHost.UseUrls("http://127.0.0.1:5266");
+builder.WebHost.UseUrls($"http://127.0.0.1:{uiPort}");
 
 // Keep C# PascalCase property names in JSON so the front-end (which reads
 // s.Method, s.Host, etc.) and SignalR payloads stay consistent.
@@ -15,6 +35,7 @@ builder.Services.AddSignalR()
     .AddJsonProtocol(o => o.PayloadSerializerOptions.PropertyNamingPolicy = null);
 builder.Services.AddSingleton<SessionStore>(_ => new SessionStore(capacity: 5000));
 builder.Services.AddSingleton<ICaptureBroadcaster, CaptureBroadcaster>();
+builder.Services.AddSingleton(new ProxyOptions(proxyPort));
 builder.Services.AddSingleton<ProxyService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<ProxyService>());
 
@@ -26,11 +47,11 @@ var app = builder.Build();
 // (Origin header). Native local processes are out of scope (inherent to loopback).
 var allowedHosts = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
 {
-    "127.0.0.1:5266", "localhost:5266"
+    $"127.0.0.1:{uiPort}", $"localhost:{uiPort}"
 };
 var allowedOrigins = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
 {
-    "http://127.0.0.1:5266", "http://localhost:5266"
+    $"http://127.0.0.1:{uiPort}", $"http://localhost:{uiPort}"
 };
 app.Use(async (ctx, next) =>
 {
@@ -146,6 +167,109 @@ app.MapPost("/api/system-proxy", (SystemProxyToggle body, ProxyService p) =>
 });
 
 app.Run();
+return 0;
+
+static int Fail(string message)
+{
+    Console.Error.WriteLine($"wirepeek: {message}");
+    return 1;
+}
+
+static bool IsPortFree(int port)
+{
+    try
+    {
+        var listener = new TcpListener(IPAddress.Loopback, port);
+        listener.Start();
+        listener.Stop();
+        return true;
+    }
+    catch (SocketException)
+    {
+        return false;
+    }
+}
 
 internal record CaptureToggle(bool Enabled);
 internal record SystemProxyToggle(bool Enabled);
+
+/// <summary>
+/// WirePeek's own command-line options. Parsing is pure (no Console/Environment.Exit)
+/// so it stays unit-testable; unrecognized -- options are left for the ASP.NET Core host.
+/// </summary>
+internal sealed record CliOptions(int UiPort, int ProxyPort, bool ShowHelp)
+{
+    public const int DefaultUiPort = 5266;
+    public const int DefaultProxyPort = 8888;
+
+    public static readonly string HelpText = $"""
+        WirePeek — local HTTP(S) capture proxy
+
+        Usage: wirepeek [options]
+
+        Options:
+          --ui-port <port>     Port for the web UI (default {DefaultUiPort})
+          --proxy-port <port>  Port the capture proxy listens on (default {DefaultProxyPort})
+          -h, --help           Show this help
+
+        Unrecognized --options are passed through to the ASP.NET Core host
+        (e.g. --environment Development).
+        """;
+
+    /// <summary>Returns the parsed options or an error message, never both.</summary>
+    public static (CliOptions? Options, string? Error) Parse(string[] args)
+    {
+        var uiPort = DefaultUiPort;
+        var proxyPort = DefaultProxyPort;
+
+        for (var i = 0; i < args.Length; i++)
+        {
+            string? error = null;
+            switch (args[i])
+            {
+                case "--help" or "-h" or "-?":
+                    return (new CliOptions(uiPort, proxyPort, ShowHelp: true), null);
+                case "--ui-port":
+                    error = TakePortValue("--ui-port", args, ref i, out uiPort);
+                    break;
+                case "--proxy-port":
+                    error = TakePortValue("--proxy-port", args, ref i, out proxyPort);
+                    break;
+                case var opt when opt.StartsWith("--ui-port=", StringComparison.Ordinal):
+                    error = ParsePort("--ui-port", opt["--ui-port=".Length..], out uiPort);
+                    break;
+                case var opt when opt.StartsWith("--proxy-port=", StringComparison.Ordinal):
+                    error = ParsePort("--proxy-port", opt["--proxy-port=".Length..], out proxyPort);
+                    break;
+                case var opt when opt.StartsWith('-'):
+                    // Not one of ours — pass through to the ASP.NET Core host untouched
+                    // (--environment, --contentRoot, --Logging:*, etc.). Skip its value
+                    // token too so we don't misparse "--environment Development".
+                    if (i + 1 < args.Length && !args[i + 1].StartsWith('-')) i++;
+                    break;
+                default:
+                    error = $"Unexpected argument '{args[i]}'. Run 'wirepeek --help' for usage.";
+                    break;
+            }
+            if (error is not null) return (null, error);
+        }
+
+        if (uiPort == proxyPort)
+            return (null, $"--ui-port and --proxy-port must differ (both are {uiPort}).");
+
+        return (new CliOptions(uiPort, proxyPort, ShowHelp: false), null);
+    }
+
+    private static string? TakePortValue(string name, string[] args, ref int i, out int port)
+    {
+        port = 0;
+        if (i + 1 >= args.Length) return $"Missing value for {name}.";
+        return ParsePort(name, args[++i], out port);
+    }
+
+    private static string? ParsePort(string name, string value, out int port)
+    {
+        if (int.TryParse(value, out port) && port is >= 1 and <= 65535) return null;
+        return $"Invalid value '{value}' for {name} — expected a port number between 1 and 65535.";
+    }
+}

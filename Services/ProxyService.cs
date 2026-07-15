@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography.X509Certificates;
@@ -10,6 +11,9 @@ using Titanium.Web.Proxy.Models;
 
 namespace WirePeek.Services;
 
+/// <summary>Startup configuration for <see cref="ProxyService"/>.</summary>
+public sealed record ProxyOptions(int Port);
+
 public sealed class ProxyService : IHostedService, IDisposable
 {
     private const int MaxCaptureBodyBytes = 2 * 1024 * 1024; // 2 MB cap per body
@@ -21,7 +25,7 @@ public sealed class ProxyService : IHostedService, IDisposable
     private readonly ProxyServer _proxy;
     private ExplicitProxyEndPoint? _endPoint;
 
-    public int Port { get; } = 8888;
+    public int Port { get; }
     public bool IsRunning { get; private set; }
     public bool SystemProxyEnabled { get; private set; }
 
@@ -31,11 +35,12 @@ public sealed class ProxyService : IHostedService, IDisposable
     /// <summary>Hosts to never record (e.g. the UI's own SignalR/API traffic).</summary>
     public HashSet<string> IgnoredHosts { get; } = new(StringComparer.OrdinalIgnoreCase);
 
-    public ProxyService(SessionStore store, ICaptureBroadcaster broadcaster, ILogger<ProxyService> logger)
+    public ProxyService(SessionStore store, ICaptureBroadcaster broadcaster, ILogger<ProxyService> logger, ProxyOptions options)
     {
         _store = store;
         _broadcaster = broadcaster;
         _logger = logger;
+        Port = options.Port;
         _proxy = new ProxyServer();
     }
 
@@ -73,6 +78,62 @@ public sealed class ProxyService : IHostedService, IDisposable
     // Registry key where we back up the user's original env var values before overwriting them.
     // Presence of this key acts as a sentinel that WirePeek owns the current values.
     private const string EnvBackupRegKey = @"Software\WirePeek\EnvBackup";
+
+    // Records which WirePeek process currently owns the system proxy (port + pid). Lets a
+    // later startup distinguish "leftover from a crashed session" from "another live WirePeek
+    // instance owns it" — the current port alone can't, now that ports are configurable.
+    private const string OwnerRegKey = @"Software\WirePeek\SystemProxy";
+
+    private void WriteOwnerRecord()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        try
+        {
+            using var key = Registry.CurrentUser.CreateSubKey(OwnerRegKey, writable: true);
+            key.SetValue("Port", Port, RegistryValueKind.DWord);
+            key.SetValue("Pid", Environment.ProcessId, RegistryValueKind.DWord);
+            key.SetValue("ProcessName", Process.GetCurrentProcess().ProcessName, RegistryValueKind.String);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not record system proxy ownership");
+        }
+    }
+
+    private void DeleteOwnerRecord()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        try { Registry.CurrentUser.DeleteSubKey(OwnerRegKey, throwOnMissingSubKey: false); }
+        catch (Exception ex) { _logger.LogWarning(ex, "Could not clear system proxy ownership record"); }
+    }
+
+    private (int Port, int Pid, string Name)? ReadOwnerRecord()
+    {
+        if (!OperatingSystem.IsWindows()) return null;
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(OwnerRegKey, writable: false);
+            if (key?.GetValue("Port") is not int port || key.GetValue("Pid") is not int pid) return null;
+            return (port, pid, key.GetValue("ProcessName") as string ?? "");
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static bool IsProcessAlive(int pid, string name)
+    {
+        try
+        {
+            using var p = Process.GetProcessById(pid);
+            return !p.HasExited && p.ProcessName.Equals(name, StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false; // no such process (or access denied — treat as not ours)
+        }
+    }
     private const string HkcuEnvironmentKey = @"Environment";
     private static readonly string[] ManagedEnvVars = ["HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "NODE_EXTRA_CA_CERTS"];
 
@@ -82,6 +143,7 @@ public sealed class ProxyService : IHostedService, IDisposable
         _proxy.SetAsSystemProxy(_endPoint, ProxyProtocolType.AllHttp);
         SetLocalBypass();
         SetProxyEnvVars();
+        WriteOwnerRecord();
         SystemProxyEnabled = true;
         _logger.LogInformation("System proxy enabled on 127.0.0.1:{Port} (loopback bypassed)", Port);
     }
@@ -241,6 +303,7 @@ public sealed class ProxyService : IHostedService, IDisposable
     {
         _proxy.DisableAllSystemProxies();
         ClearProxyEnvVars();
+        DeleteOwnerRecord();
         SystemProxyEnabled = false;
         _logger.LogInformation("System proxy disabled");
     }
@@ -261,16 +324,61 @@ public sealed class ProxyService : IHostedService, IDisposable
             var enabled = (key?.GetValue("ProxyEnable") as int?) == 1;
             var server = key?.GetValue("ProxyServer") as string ?? "";
 
-            // Only treat it as "ours" if the system proxy points at our loopback port.
-            var pointsAtUs = server.Contains($":{Port}", StringComparison.Ordinal)
-                             && (server.Contains("127.0.0.1", StringComparison.OrdinalIgnoreCase)
-                                 || server.Contains("localhost", StringComparison.OrdinalIgnoreCase));
+            static bool PointsAtLoopbackPort(string server, int port) =>
+                server.Contains($":{port}", StringComparison.Ordinal)
+                && (server.Contains("127.0.0.1", StringComparison.OrdinalIgnoreCase)
+                    || server.Contains("localhost", StringComparison.OrdinalIgnoreCase));
 
-            SystemProxyEnabled = enabled && pointsAtUs;
+            var owner = ReadOwnerRecord();
+
+            // Another live WirePeek instance owns the system proxy and env vars —
+            // leave everything alone or we'd clobber its state.
+            if (owner is { } live && live.Pid != Environment.ProcessId && IsProcessAlive(live.Pid, live.Name))
+            {
+                _logger.LogInformation(
+                    "System proxy is owned by another running WirePeek instance (pid {Pid}, port {OwnerPort}); leaving it untouched.",
+                    live.Pid, live.Port);
+                SystemProxyEnabled = false;
+                return false;
+            }
+
+            if (owner is { } dead)
+            {
+                // Owner crashed. If the proxy still points at its (different) port, nobody
+                // serves that endpoint anymore — machine-wide routing is broken. Adopting
+                // wouldn't help (we listen elsewhere), so clean it up now.
+                if (enabled && PointsAtLoopbackPort(server, dead.Port) && dead.Port != Port)
+                {
+                    _logger.LogWarning(
+                        "Cleaning up system proxy left on port {OldPort} by a crashed session (this instance listens on {Port}).",
+                        dead.Port, Port);
+                    _proxy.DisableAllSystemProxies();
+                    ClearProxyEnvVars();
+                    DeleteOwnerRecord();
+                    SystemProxyEnabled = false;
+                    return false;
+                }
+                // Proxy no longer points at the dead owner's port (user or another app
+                // changed it): the WinINET setting isn't ours to touch, but our env-var
+                // leftovers and stale ownership record are — drop them.
+                if (!(enabled && PointsAtLoopbackPort(server, Port)))
+                {
+                    ClearProxyEnvVars();
+                    DeleteOwnerRecord();
+                    SystemProxyEnabled = false;
+                    return false;
+                }
+                // Same port as ours: fall through and adopt it — we serve that endpoint again.
+            }
+
+            SystemProxyEnabled = enabled && PointsAtLoopbackPort(server, Port);
             if (SystemProxyEnabled)
+            {
                 _logger.LogWarning(
                     "Detected a leftover system proxy from a previous session (ProxyServer={Server}). " +
                     "Reflecting it as enabled; it will be disabled on clean shutdown or via the UI.", server);
+                WriteOwnerRecord(); // we own it from here on
+            }
 
             ReconcileEnvVarState();
             return SystemProxyEnabled;
@@ -354,9 +462,14 @@ public sealed class ProxyService : IHostedService, IDisposable
 
     private void OnProcessExit(object? sender, EventArgs e)
     {
-        try { if (SystemProxyEnabled) _proxy.DisableAllSystemProxies(); }
+        // Only touch shared machine state if this instance owns the system proxy —
+        // another instance's env vars and ownership record are not ours to clear.
+        if (!SystemProxyEnabled) return;
+        try { _proxy.DisableAllSystemProxies(); }
         catch { /* best-effort cleanup */ }
         try { ClearProxyEnvVars(); }
+        catch { /* best-effort cleanup */ }
+        try { DeleteOwnerRecord(); }
         catch { /* best-effort cleanup */ }
     }
 
