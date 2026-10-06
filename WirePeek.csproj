@@ -11,11 +11,11 @@
     <PackageId>WirePeek</PackageId>
     <Version>0.2.1</Version>
     <Authors>jlieuw</Authors>
-    <Description>A lightweight, Fiddler-like HTTP(S) capture tool for Windows. Runs a local MITM proxy and shows every outgoing request in a live web UI: full headers and decoded request/response bodies.</Description>
+    <Description>A lightweight, Fiddler-like HTTP(S) capture tool for Windows and macOS. Runs a local MITM proxy and shows every outgoing request in a live web UI: full headers and decoded request/response bodies.</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageProjectUrl>https://github.com/jlieuw/WirePeek</PackageProjectUrl>
     <RepositoryUrl>https://github.com/jlieuw/WirePeek</RepositoryUrl>
-    <PackageTags>http;https;proxy;capture;debugging;traffic;inspector;mitm;windows</PackageTags>
+    <PackageTags>http;https;proxy;capture;debugging;traffic;inspector;mitm;windows;macos</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
 
     <!-- Embed wwwroot so the UI is served from the assembly when installed as a tool. -->

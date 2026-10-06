@@ -6,8 +6,8 @@ namespace WirePeek.Services;
 
 /// <summary>
 /// Provides a per-user, access-restricted location for the proxy's root CA private key
-/// and a DPAPI-protected random password, so the CA key is not world-readable or
-/// stored unencrypted in the application/build directory.
+/// and a random password (DPAPI-protected on Windows; owner-only file mode elsewhere), so
+/// the CA key is not world-readable or stored unencrypted in the application/build directory.
 /// </summary>
 public static class CaKeyStore
 {
@@ -25,8 +25,19 @@ public static class CaKeyStore
         System.IO.Directory.CreateDirectory(Directory);
         if (OperatingSystem.IsWindows())
             LockDirectoryToCurrentUser(Directory);
+        else
+            File.SetUnixFileMode(Directory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
 
-        return LoadOrCreatePassword();
+        var password = LoadOrCreatePassword();
+        RestrictFileToCurrentUser(PasswordPath); // no DPAPI off Windows: file mode is the protection
+        return password;
+    }
+
+    /// <summary>On Unix, limits a file to owner read/write (0600). Windows relies on the directory ACL.</summary>
+    public static void RestrictFileToCurrentUser(string path)
+    {
+        if (!OperatingSystem.IsWindows() && File.Exists(path))
+            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
     }
 
     private static string LoadOrCreatePassword()
