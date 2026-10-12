@@ -155,12 +155,22 @@ public sealed class ProxyService : IHostedService, IDisposable
             return false; // no such process (or access denied — treat as not ours)
         }
     }
+
+    /// <summary>The owner record of another, still-running WirePeek instance, if one holds the system proxy.</summary>
+    private (int Port, int Pid, string Name)? LiveForeignOwner() =>
+        ReadOwnerRecord() is { } o && o.Pid != Environment.ProcessId && IsProcessAlive(o.Pid, o.Name) ? o : null;
+
     private const string HkcuEnvironmentKey = @"Environment";
     private static readonly string[] ManagedEnvVars = ["HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "NODE_EXTRA_CA_CERTS"];
 
     public void EnableSystemProxy()
     {
         if (_endPoint is null) return;
+        // Taking over would leave both instances believing they own the proxy, and whichever
+        // shuts down first would restore the settings out from under the other.
+        if (LiveForeignOwner() is { } other)
+            throw new InvalidOperationException(
+                $"The system proxy is in use by another WirePeek instance (pid {other.Pid}, port {other.Port}). Turn it off there first.");
         if (OperatingSystem.IsMacOS())
         {
             MacSystemIntegration.EnableSystemProxy(Port); // includes the loopback bypass
@@ -329,6 +339,13 @@ public sealed class ProxyService : IHostedService, IDisposable
 
     public void DisableSystemProxy()
     {
+        if (LiveForeignOwner() is { } other)
+        {
+            // Not ours (anymore): another live instance holds it, so leave its settings alone.
+            _logger.LogWarning("System proxy is owned by another WirePeek instance (pid {Pid}); not touching it.", other.Pid);
+            SystemProxyEnabled = false;
+            return;
+        }
         TurnOffSystemProxy();
         ClearProxyEnvVars();
         DeleteOwnerRecord();
@@ -372,11 +389,9 @@ public sealed class ProxyService : IHostedService, IDisposable
                 && (server.Contains("127.0.0.1", StringComparison.OrdinalIgnoreCase)
                     || server.Contains("localhost", StringComparison.OrdinalIgnoreCase));
 
-            var owner = ReadOwnerRecord();
-
             // Another live WirePeek instance owns the system proxy and env vars —
             // leave everything alone or we'd clobber its state.
-            if (owner is { } live && live.Pid != Environment.ProcessId && IsProcessAlive(live.Pid, live.Name))
+            if (LiveForeignOwner() is { } live)
             {
                 _logger.LogInformation(
                     "System proxy is owned by another running WirePeek instance (pid {Pid}, port {OwnerPort}); leaving it untouched.",
@@ -385,7 +400,7 @@ public sealed class ProxyService : IHostedService, IDisposable
                 return false;
             }
 
-            if (owner is { } dead)
+            if (ReadOwnerRecord() is { } dead)
             {
                 // Owner crashed. If the proxy still points at its (different) port, nobody
                 // serves that endpoint anymore — machine-wide routing is broken. Adopting
@@ -511,7 +526,7 @@ public sealed class ProxyService : IHostedService, IDisposable
     {
         // Only touch shared machine state if this instance owns the system proxy —
         // another instance's env vars and ownership record are not ours to clear.
-        if (!SystemProxyEnabled) return;
+        if (!SystemProxyEnabled || LiveForeignOwner() is not null) return;
         try { TurnOffSystemProxy(); }
         catch { /* best-effort cleanup */ }
         try { ClearProxyEnvVars(); }

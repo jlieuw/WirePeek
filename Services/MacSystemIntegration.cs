@@ -70,7 +70,10 @@ public static class MacSystemIntegration
         List<ServiceBackup> backups;
         if (File.Exists(BackupPath))
         {
-            backups = ReadBackup() ?? [];
+            // Without readable originals we could never restore the user's settings — don't touch them.
+            backups = ReadBackup() ?? throw new InvalidOperationException(
+                $"The saved proxy settings in {BackupPath} are unreadable; refusing to change the system proxy. " +
+                "Check your network proxy settings, then delete that file to continue.");
         }
         else
         {
@@ -102,7 +105,8 @@ public static class MacSystemIntegration
         var backups = ReadBackup();
         if (backups is null)
         {
-            // Unreadable backup: the originals are lost, but at least stop routing through us.
+            // Unreadable backup: the originals are lost. Still stop routing through us — leaving the
+            // proxy pointed at a port nobody serves once we exit would break networking.
             foreach (var service in current)
             {
                 RunNetworkSetup("-setwebproxystate", service, "off");
