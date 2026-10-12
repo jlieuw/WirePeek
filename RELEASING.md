@@ -48,7 +48,8 @@ to winget — a changed file no longer matches the hash in the published manifes
 The package has to exist in [microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs)
 before updates can be automated:
 
-1. Download the `winget-manifests-<tag>` artifact from the workflow run and extract it.
+1. Download the `winget-manifests-<tag>` artifact from the workflow run and extract it;
+   it contains `manifests\j\jlieuw\WirePeek\<version>\`. Run the commands below from there.
 2. Optionally test locally on Windows: `winget settings --enable LocalManifestFiles`, then
    `winget install --manifest manifests\j\jlieuw\WirePeek\<version>`.
 3. Submit it: `wingetcreate submit --token <PAT> manifests\j\jlieuw\WirePeek\<version>`
@@ -61,8 +62,10 @@ before updates can be automated:
 After the first submission is merged:
 
 1. Fork [microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs) to your account.
-2. Create a classic GitHub PAT with the `public_repo` scope and add it as the repository
-   secret `WINGET_TOKEN`.
+2. Create a classic GitHub PAT with the `public_repo` and `workflow` scopes and add it as
+   the repository secret `WINGET_TOKEN`. (`workflow` lets the action sync your fork when
+   upstream workflow files change; without it, runs can fail with an `UpdateRef`
+   permission error until you sync the fork manually in the GitHub UI.)
 3. Add the repository **variable** `WINGET_AUTOPUBLISH` = `true`
    (Settings → Secrets and variables → Actions → Variables).
 

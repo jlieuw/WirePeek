@@ -64,12 +64,20 @@ jobs:
             "WirePeek $env:TAG is up: proxy on $($s.port), UI served"
           } finally { Stop-Process -Id $p.Id -Force }
 
-      # No --clobber: replacing an asset changes its hash and would break published winget manifests.
+      # Never replace an existing asset: a changed file no longer matches the hash in published
+      # winget manifests. An asset that is already there (e.g. on a re-run) is kept as-is.
       - name: Upload to release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload $env:TAG $env:ZIP
+        run: |
+          $existing = gh release view $env:TAG --json assets --jq '.assets[].name'
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          if ($existing -contains $env:ZIP) {
+            "::notice::$env:ZIP is already attached to $env:TAG; keeping the existing file."
+            exit 0
+          }
+          gh release upload $env:TAG $env:ZIP
 
   winget-manifests:
     needs: build
@@ -77,9 +85,9 @@ jobs:
     permissions:
       contents: read
     steps:
+      # Templates come from the workflow's own ref, not the release tag: on a manual run for an
+      # older tag, that tag may predate packaging/winget/. (On release events both are the tag.)
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ env.TAG }}
 
       # Fills packaging/winget/*.yaml with this release's version, URLs and hashes. The result is
       # uploaded as a workflow artifact — use it for the first winget-pkgs submission (see RELEASING.md).
@@ -98,7 +106,7 @@ jobs:
             '{{SHA256_X64}}'   = (Get-FileHash "assets/WirePeek-$ver-win-x64.zip").Hash
             '{{SHA256_ARM64}}' = (Get-FileHash "assets/WirePeek-$ver-win-arm64.zip").Hash
           }
-          $dest = "manifests/j/jlieuw/WirePeek/$ver"
+          $dest = "winget/manifests/j/jlieuw/WirePeek/$ver"
           New-Item -ItemType Directory -Force $dest | Out-Null
           foreach ($f in Get-ChildItem packaging/winget/*.yaml) {
             $text = (Get-Content $f -Raw) -replace '(?m)^# Template:.*\r?\n', ''
@@ -111,7 +119,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: winget-manifests-${{ env.TAG }}
-          path: manifests/
+          path: winget/   # artifact root is this folder, so the zip contains manifests/j/jlieuw/…
 
   # Opens the winget-pkgs PR for new versions once the package exists there. Off until the
   # first submission is merged: set the repo variable WINGET_AUTOPUBLISH=true and the
