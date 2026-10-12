@@ -20,10 +20,18 @@ web UI — where it's going, full headers, and decoded request/response bodies.
 - In-memory ring buffer (last 5000 requests) — nothing written to disk
 
 ## Requirements
-- .NET SDK 10 (the runtime ships with the SDK, so `dotnet tool` users need it too)
 - Windows 10/11, or macOS (uses the OS system proxy and the per-user certificate store)
+- For the .NET global tool or running from source: .NET SDK 10. The standalone Windows
+  download needs nothing else.
 
 ## Install
+### Standalone (Windows, no .NET needed)
+Download `WirePeek-<version>-win-x64.zip` (or `-win-arm64.zip`) from the
+[latest release](https://github.com/jlieuw/WirePeek/releases/latest), extract it and run
+`WirePeek.exe`. The binaries are not code-signed yet, so Windows SmartScreen may warn
+the first time you run it.
+
+### .NET global tool (Windows and macOS)
 WirePeek is published as a .NET global tool:
 ```powershell
 dotnet tool install --global WirePeek

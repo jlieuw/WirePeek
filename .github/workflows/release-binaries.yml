@@ -1,0 +1,131 @@
+name: Release binaries
+
+# Builds self-contained, single-file Windows binaries (no .NET install needed) for a GitHub
+# Release, attaches them as zips, and renders the winget manifests for that version.
+# Runs alongside publish.yml (NuGet) when a release is published, or manually for an
+# existing release tag via the Actions tab.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag to build binaries for (e.g. v0.3.0)'
+        required: true
+
+env:
+  TAG: ${{ github.event.release.tag_name || inputs.tag }}
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write   # upload release assets
+    strategy:
+      matrix:
+        rid: [win-x64, win-arm64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Publish
+        shell: pwsh
+        run: |
+          $ver = $env:TAG -replace '^v', ''
+          dotnet publish WirePeek.csproj -c Release -r ${{ matrix.rid }} --self-contained `
+            -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true -p:PackAsTool=false -p:DebugType=none `
+            -p:Version=$ver -o out
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Copy-Item LICENSE, THIRD-PARTY-NOTICES.md out/
+          $zip = "WirePeek-$ver-${{ matrix.rid }}.zip"
+          Compress-Archive -Path out/* -DestinationPath $zip
+          "ZIP=$zip" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      # The runner is x64, so only that build can actually be started.
+      - name: Smoke test
+        if: matrix.rid == 'win-x64'
+        shell: pwsh
+        run: |
+          $p = Start-Process out/WirePeek.exe -ArgumentList '--ui-port', '5390', '--proxy-port', '9390' -PassThru
+          try {
+            for ($i = 0; $i -lt 30; $i++) {
+              try { $s = Invoke-RestMethod http://127.0.0.1:5390/api/status; break } catch { Start-Sleep 1 }
+            }
+            if (-not $s.running) { throw 'WirePeek did not report running' }
+            $ui = Invoke-WebRequest http://127.0.0.1:5390/ -UseBasicParsing
+            if ($ui.StatusCode -ne 200) { throw "UI returned $($ui.StatusCode)" }
+            "WirePeek $env:TAG is up: proxy on $($s.port), UI served"
+          } finally { Stop-Process -Id $p.Id -Force }
+
+      # No --clobber: replacing an asset changes its hash and would break published winget manifests.
+      - name: Upload to release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload $env:TAG $env:ZIP
+
+  winget-manifests:
+    needs: build
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      # Fills packaging/winget/*.yaml with this release's version, URLs and hashes. The result is
+      # uploaded as a workflow artifact — use it for the first winget-pkgs submission (see RELEASING.md).
+      - name: Render manifests
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ver = $env:TAG -replace '^v', ''
+          gh release download $env:TAG -p 'WirePeek-*-win-*.zip' -D assets
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $tokens = @{
+            '{{VERSION}}'      = $ver
+            '{{TAG}}'          = $env:TAG
+            '{{RELEASE_DATE}}' = (gh release view $env:TAG --json publishedAt --jq '.publishedAt[:10]')
+            '{{SHA256_X64}}'   = (Get-FileHash "assets/WirePeek-$ver-win-x64.zip").Hash
+            '{{SHA256_ARM64}}' = (Get-FileHash "assets/WirePeek-$ver-win-arm64.zip").Hash
+          }
+          $dest = "manifests/j/jlieuw/WirePeek/$ver"
+          New-Item -ItemType Directory -Force $dest | Out-Null
+          foreach ($f in Get-ChildItem packaging/winget/*.yaml) {
+            $text = (Get-Content $f -Raw) -replace '(?m)^# Template:.*\r?\n', ''
+            foreach ($t in $tokens.GetEnumerator()) { $text = $text.Replace($t.Key, $t.Value) }
+            if ($text -match '\{\{\w+\}\}') { throw "Unreplaced token in $($f.Name): $($Matches[0])" }
+            Set-Content -Path (Join-Path $dest $f.Name) -Value $text -NoNewline
+          }
+          Get-ChildItem $dest | ForEach-Object { "--- $($_.Name)"; Get-Content $_ }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: winget-manifests-${{ env.TAG }}
+          path: manifests/
+
+  # Opens the winget-pkgs PR for new versions once the package exists there. Off until the
+  # first submission is merged: set the repo variable WINGET_AUTOPUBLISH=true and the
+  # WINGET_TOKEN secret to enable it (see RELEASING.md).
+  winget-publish:
+    needs: build
+    if: vars.WINGET_AUTOPUBLISH == 'true'
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: vedantmgoyal9/winget-releaser@v2
+        with:
+          identifier: jlieuw.WirePeek
+          installers-regex: '-win-(x64|arm64)\.zip$'
+          release-tag: ${{ env.TAG }}
+          token: ${{ secrets.WINGET_TOKEN }}

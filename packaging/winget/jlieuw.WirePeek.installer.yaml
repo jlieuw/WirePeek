@@ -1,0 +1,22 @@
+# Template: placeholders are filled per release by .github/workflows/release-binaries.yml.
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.12.0.schema.json
+
+PackageIdentifier: jlieuw.WirePeek
+PackageVersion: {{VERSION}}
+InstallerType: zip
+NestedInstallerType: portable
+NestedInstallerFiles:
+- RelativeFilePath: WirePeek.exe
+  PortableCommandAlias: wirepeek
+Commands:
+- wirepeek
+ReleaseDate: {{RELEASE_DATE}}
+Installers:
+- Architecture: x64
+  InstallerUrl: https://github.com/jlieuw/WirePeek/releases/download/{{TAG}}/WirePeek-{{VERSION}}-win-x64.zip
+  InstallerSha256: {{SHA256_X64}}
+- Architecture: arm64
+  InstallerUrl: https://github.com/jlieuw/WirePeek/releases/download/{{TAG}}/WirePeek-{{VERSION}}-win-arm64.zip
+  InstallerSha256: {{SHA256_ARM64}}
+ManifestType: installer
+ManifestVersion: 1.12.0

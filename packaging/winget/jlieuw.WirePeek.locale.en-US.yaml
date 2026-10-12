@@ -1,0 +1,31 @@
+# Template: placeholders are filled per release by .github/workflows/release-binaries.yml.
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json
+
+PackageIdentifier: jlieuw.WirePeek
+PackageVersion: {{VERSION}}
+PackageLocale: en-US
+Publisher: jlieuw
+PublisherUrl: https://github.com/jlieuw
+PublisherSupportUrl: https://github.com/jlieuw/WirePeek/issues
+Author: jlieuw
+PackageName: WirePeek
+PackageUrl: https://github.com/jlieuw/WirePeek
+License: MIT
+LicenseUrl: https://github.com/jlieuw/WirePeek/blob/main/LICENSE
+ShortDescription: Lightweight, Fiddler-like HTTP(S) capture proxy with a live web UI.
+Description: |-
+  WirePeek runs a local man-in-the-middle proxy and shows every outgoing HTTP(S) request in a
+  live web UI: where it is going, full headers, and decoded request/response bodies.
+  HTTPS is decrypted with a locally generated root CA that you explicitly trust for your user
+  only. Use it only on machines you own, to inspect your own traffic.
+Moniker: wirepeek
+Tags:
+- debugging
+- http
+- https
+- inspector
+- proxy
+- traffic
+ReleaseNotesUrl: https://github.com/jlieuw/WirePeek/releases/tag/{{TAG}}
+ManifestType: defaultLocale
+ManifestVersion: 1.12.0
