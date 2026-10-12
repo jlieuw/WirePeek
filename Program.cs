@@ -26,6 +26,10 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.WebHost.UseUrls($"http://127.0.0.1:{uiPort}");
 
+// Installed builds (dotnet tool, standalone exe) start in an arbitrary working directory,
+// so appsettings.json isn't found there. Keep per-request framework logging quiet regardless.
+builder.Logging.AddFilter("Microsoft.AspNetCore", LogLevel.Warning);
+
 // Keep C# PascalCase property names in JSON so the front-end (which reads
 // s.Method, s.Host, etc.) and SignalR payloads stay consistent.
 builder.Services.Configure<Microsoft.AspNetCore.Http.Json.JsonOptions>(o =>
