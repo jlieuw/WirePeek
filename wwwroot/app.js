@@ -373,12 +373,21 @@ btnSysProxy.addEventListener("click", async () => {
     body: JSON.stringify({ enabled: target })
   });
   if (r.ok) { sysProxyEnabled = (await r.json()).systemProxyEnabled; updateSysProxyBtn(); }
+  else await alertProblem(r, "Could not change the system proxy");
 });
 
 btnCertInstall.addEventListener("click", async () => {
   const r = await fetch("/api/cert/install", { method: "POST" });
   if (r.ok) { certTrusted = (await r.json()).certTrusted; updateCertBtn(); }
+  else await alertProblem(r, "Could not trust the certificate");
 });
+
+// Shows the server's ProblemDetails message for a failed action.
+async function alertProblem(r, what) {
+  let detail = "";
+  try { detail = (await r.json()).detail ?? ""; } catch { /* not JSON */ }
+  alert(detail ? `${what}:\n\n${detail}` : `${what} (HTTP ${r.status}).`);
+}
 
 function updateCaptureBtn() {
   btnCapture.textContent = captureEnabled ? "⏸ Pause" : "▶ Resume";

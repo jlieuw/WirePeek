@@ -45,7 +45,9 @@ public sealed class ProxyService : IHostedService, IDisposable
     }
 
     // ---- Certificate helpers ----------------------------------------------
-    public bool IsCertTrusted => _proxy.CertificateManager.IsRootCertificateUserTrusted();
+    public bool IsCertTrusted => OperatingSystem.IsMacOS()
+        ? _proxy.CertificateManager.RootCertificate is { } root && MacSystemIntegration.IsRootTrusted(root)
+        : _proxy.CertificateManager.IsRootCertificateUserTrusted();
 
     public byte[] ExportRootCertificate()
     {
@@ -56,8 +58,17 @@ public sealed class ProxyService : IHostedService, IDisposable
 
     public string RootCertificateName => _proxy.CertificateManager.RootCertificateName ?? "WirePeek Root";
 
-    public void TrustCertificate() => _proxy.CertificateManager.TrustRootCertificate(machineTrusted: false);
-    public void UntrustCertificate() => _proxy.CertificateManager.RemoveTrustedRootCertificate(machineTrusted: false);
+    public void TrustCertificate()
+    {
+        if (OperatingSystem.IsMacOS()) MacSystemIntegration.TrustRoot(CaKeyStore.CaPemPath);
+        else _proxy.CertificateManager.TrustRootCertificate(machineTrusted: false);
+    }
+
+    public void UntrustCertificate()
+    {
+        if (OperatingSystem.IsMacOS()) MacSystemIntegration.UntrustRoot(CaKeyStore.CaPemPath);
+        else _proxy.CertificateManager.RemoveTrustedRootCertificate(machineTrusted: false);
+    }
 
     private void ExportCaPem()
     {
@@ -86,9 +97,14 @@ public sealed class ProxyService : IHostedService, IDisposable
 
     private void WriteOwnerRecord()
     {
-        if (!OperatingSystem.IsWindows()) return;
         try
         {
+            if (OperatingSystem.IsMacOS())
+            {
+                MacSystemIntegration.WriteOwner(new(Port, Environment.ProcessId, Process.GetCurrentProcess().ProcessName));
+                return;
+            }
+            if (!OperatingSystem.IsWindows()) return;
             using var key = Registry.CurrentUser.CreateSubKey(OwnerRegKey, writable: true);
             key.SetValue("Port", Port, RegistryValueKind.DWord);
             key.SetValue("Pid", Environment.ProcessId, RegistryValueKind.DWord);
@@ -102,13 +118,18 @@ public sealed class ProxyService : IHostedService, IDisposable
 
     private void DeleteOwnerRecord()
     {
-        if (!OperatingSystem.IsWindows()) return;
-        try { Registry.CurrentUser.DeleteSubKey(OwnerRegKey, throwOnMissingSubKey: false); }
+        try
+        {
+            if (OperatingSystem.IsMacOS()) MacSystemIntegration.DeleteOwner();
+            else if (OperatingSystem.IsWindows()) Registry.CurrentUser.DeleteSubKey(OwnerRegKey, throwOnMissingSubKey: false);
+        }
         catch (Exception ex) { _logger.LogWarning(ex, "Could not clear system proxy ownership record"); }
     }
 
     private (int Port, int Pid, string Name)? ReadOwnerRecord()
     {
+        if (OperatingSystem.IsMacOS())
+            return MacSystemIntegration.ReadOwner() is { } o ? (o.Port, o.Pid, o.ProcessName) : null;
         if (!OperatingSystem.IsWindows()) return null;
         try
         {
@@ -134,15 +155,32 @@ public sealed class ProxyService : IHostedService, IDisposable
             return false; // no such process (or access denied — treat as not ours)
         }
     }
+
+    /// <summary>The owner record of another, still-running WirePeek instance, if one holds the system proxy.</summary>
+    private (int Port, int Pid, string Name)? LiveForeignOwner() =>
+        ReadOwnerRecord() is { } o && o.Pid != Environment.ProcessId && IsProcessAlive(o.Pid, o.Name) ? o : null;
+
     private const string HkcuEnvironmentKey = @"Environment";
     private static readonly string[] ManagedEnvVars = ["HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "NODE_EXTRA_CA_CERTS"];
 
     public void EnableSystemProxy()
     {
         if (_endPoint is null) return;
-        _proxy.SetAsSystemProxy(_endPoint, ProxyProtocolType.AllHttp);
-        SetLocalBypass();
-        SetProxyEnvVars();
+        // Taking over would leave both instances believing they own the proxy, and whichever
+        // shuts down first would restore the settings out from under the other.
+        if (LiveForeignOwner() is { } other)
+            throw new InvalidOperationException(
+                $"The system proxy is in use by another WirePeek instance (pid {other.Pid}, port {other.Port}). Turn it off there first.");
+        if (OperatingSystem.IsMacOS())
+        {
+            MacSystemIntegration.EnableSystemProxy(Port); // includes the loopback bypass
+        }
+        else
+        {
+            _proxy.SetAsSystemProxy(_endPoint, ProxyProtocolType.AllHttp);
+            SetLocalBypass();
+            SetProxyEnvVars();
+        }
         WriteOwnerRecord();
         SystemProxyEnabled = true;
         _logger.LogInformation("System proxy enabled on 127.0.0.1:{Port} (loopback bypassed)", Port);
@@ -301,39 +339,59 @@ public sealed class ProxyService : IHostedService, IDisposable
 
     public void DisableSystemProxy()
     {
-        _proxy.DisableAllSystemProxies();
+        if (LiveForeignOwner() is { } other)
+        {
+            // Not ours (anymore): another live instance holds it, so leave its settings alone.
+            _logger.LogWarning("System proxy is owned by another WirePeek instance (pid {Pid}); not touching it.", other.Pid);
+            SystemProxyEnabled = false;
+            return;
+        }
+        TurnOffSystemProxy();
         ClearProxyEnvVars();
         DeleteOwnerRecord();
         SystemProxyEnabled = false;
         _logger.LogInformation("System proxy disabled");
     }
 
+    /// <summary>Points the OS proxy setting away from us: restores the originals on macOS, clears it on Windows.</summary>
+    private void TurnOffSystemProxy()
+    {
+        if (OperatingSystem.IsMacOS()) MacSystemIntegration.RestoreSystemProxy();
+        else _proxy.DisableAllSystemProxies();
+    }
+
+    /// <summary>The OS proxy setting as (enabled, "host:port"-ish server string).</summary>
+    private static (bool Enabled, string Server) ReadSystemProxySetting()
+    {
+        if (OperatingSystem.IsMacOS()) return MacSystemIntegration.ReadSystemProxy();
+        if (!OperatingSystem.IsWindows()) return (false, "");
+
+        using var key = Registry.CurrentUser.OpenSubKey(
+            @"Software\Microsoft\Windows\CurrentVersion\Internet Settings", writable: false);
+        return ((key?.GetValue("ProxyEnable") as int?) == 1, key?.GetValue("ProxyServer") as string ?? "");
+    }
+
     /// <summary>
-    /// Reconciles in-memory state with the actual Windows proxy registry at startup.
+    /// Reconciles in-memory state with the actual OS proxy setting at startup.
     /// If a previous session exited abnormally (crash/hard-kill) it may have left the
     /// system proxy pointing at us; reflect that so the UI shows the true state and the
     /// user can turn it off. Only claims the proxy if it points at our own endpoint.
     /// </summary>
     public bool ReconcileSystemProxyState()
     {
-        if (!OperatingSystem.IsWindows()) return false;
+        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsMacOS()) return false;
         try
         {
-            using var key = Registry.CurrentUser.OpenSubKey(
-                @"Software\Microsoft\Windows\CurrentVersion\Internet Settings", writable: false);
-            var enabled = (key?.GetValue("ProxyEnable") as int?) == 1;
-            var server = key?.GetValue("ProxyServer") as string ?? "";
+            var (enabled, server) = ReadSystemProxySetting();
 
             static bool PointsAtLoopbackPort(string server, int port) =>
                 server.Contains($":{port}", StringComparison.Ordinal)
                 && (server.Contains("127.0.0.1", StringComparison.OrdinalIgnoreCase)
                     || server.Contains("localhost", StringComparison.OrdinalIgnoreCase));
 
-            var owner = ReadOwnerRecord();
-
             // Another live WirePeek instance owns the system proxy and env vars —
             // leave everything alone or we'd clobber its state.
-            if (owner is { } live && live.Pid != Environment.ProcessId && IsProcessAlive(live.Pid, live.Name))
+            if (LiveForeignOwner() is { } live)
             {
                 _logger.LogInformation(
                     "System proxy is owned by another running WirePeek instance (pid {Pid}, port {OwnerPort}); leaving it untouched.",
@@ -342,7 +400,7 @@ public sealed class ProxyService : IHostedService, IDisposable
                 return false;
             }
 
-            if (owner is { } dead)
+            if (ReadOwnerRecord() is { } dead)
             {
                 // Owner crashed. If the proxy still points at its (different) port, nobody
                 // serves that endpoint anymore — machine-wide routing is broken. Adopting
@@ -352,18 +410,19 @@ public sealed class ProxyService : IHostedService, IDisposable
                     _logger.LogWarning(
                         "Cleaning up system proxy left on port {OldPort} by a crashed session (this instance listens on {Port}).",
                         dead.Port, Port);
-                    _proxy.DisableAllSystemProxies();
+                    TurnOffSystemProxy();
                     ClearProxyEnvVars();
                     DeleteOwnerRecord();
                     SystemProxyEnabled = false;
                     return false;
                 }
                 // Proxy no longer points at the dead owner's port (user or another app
-                // changed it): the WinINET setting isn't ours to touch, but our env-var
-                // leftovers and stale ownership record are — drop them.
+                // changed it): the OS setting isn't ours to touch, but our env-var
+                // leftovers, saved originals and stale ownership record are — drop them.
                 if (!(enabled && PointsAtLoopbackPort(server, Port)))
                 {
                     ClearProxyEnvVars();
+                    if (OperatingSystem.IsMacOS()) MacSystemIntegration.ForgetSystemProxyBackup();
                     DeleteOwnerRecord();
                     SystemProxyEnabled = false;
                     return false;
@@ -381,6 +440,8 @@ public sealed class ProxyService : IHostedService, IDisposable
             }
 
             ReconcileEnvVarState();
+            // Saved originals with no proxy pointing at us are stale (the user changed the setting).
+            if (OperatingSystem.IsMacOS() && !SystemProxyEnabled) MacSystemIntegration.ForgetSystemProxyBackup();
             return SystemProxyEnabled;
         }
         catch (Exception ex)
@@ -437,7 +498,8 @@ public sealed class ProxyService : IHostedService, IDisposable
         _proxy.CertificateManager.RootCertificateName = "WirePeek Root CA";
         _proxy.CertificateManager.RootCertificateIssuerName = "WirePeek";
         _proxy.CertificateManager.EnsureRootCertificate();
-        ExportCaPem(); // Write PEM so NODE_EXTRA_CA_CERTS can point at it
+        CaKeyStore.RestrictFileToCurrentUser(CaKeyStore.PfxPath);
+        ExportCaPem(); // Write PEM so NODE_EXTRA_CA_CERTS (Windows) / `security` (macOS) can use it
 
         _endPoint = new ExplicitProxyEndPoint(IPAddress.Loopback, Port, decryptSsl: true);
         _proxy.AddEndPoint(_endPoint);
@@ -464,8 +526,8 @@ public sealed class ProxyService : IHostedService, IDisposable
     {
         // Only touch shared machine state if this instance owns the system proxy —
         // another instance's env vars and ownership record are not ours to clear.
-        if (!SystemProxyEnabled) return;
-        try { _proxy.DisableAllSystemProxies(); }
+        if (!SystemProxyEnabled || LiveForeignOwner() is not null) return;
+        try { TurnOffSystemProxy(); }
         catch { /* best-effort cleanup */ }
         try { ClearProxyEnvVars(); }
         catch { /* best-effort cleanup */ }
