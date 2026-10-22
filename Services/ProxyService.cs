@@ -497,7 +497,11 @@ public sealed class ProxyService : IHostedService, IDisposable
 
         _proxy.CertificateManager.RootCertificateName = "WirePeek Root CA";
         _proxy.CertificateManager.RootCertificateIssuerName = "WirePeek";
-        _proxy.CertificateManager.EnsureRootCertificate();
+        // Only create/load the CA here. The parameterless overload also trusts it (ProxyServer
+        // defaults to user trust), which on Windows pops a certificate-install dialog at startup
+        // and blocks until answered; trusting is the user's explicit Trust Cert action.
+        _proxy.CertificateManager.EnsureRootCertificate(
+            userTrustRootCertificate: false, machineTrustRootCertificate: false);
         CaKeyStore.RestrictFileToCurrentUser(CaKeyStore.PfxPath);
         ExportCaPem(); // Write PEM so NODE_EXTRA_CA_CERTS (Windows) / `security` (macOS) can use it
 
