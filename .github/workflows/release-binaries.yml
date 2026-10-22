@@ -53,16 +53,25 @@ jobs:
         if: matrix.rid == 'win-x64'
         shell: pwsh
         run: |
-          $p = Start-Process out/WirePeek.exe -ArgumentList '--ui-port', '5390', '--proxy-port', '9390' -PassThru
+          $p = Start-Process out/WirePeek.exe -ArgumentList '--ui-port', '5390', '--proxy-port', '9390' -PassThru `
+            -RedirectStandardOutput smoke.out -RedirectStandardError smoke.err
           try {
             for ($i = 0; $i -lt 30; $i++) {
-              try { $s = Invoke-RestMethod http://127.0.0.1:5390/api/status; break } catch { Start-Sleep 1 }
+              if ($p.HasExited) { throw "WirePeek exited early with code $($p.ExitCode)" }
+              try { $s = Invoke-RestMethod http://127.0.0.1:5390/api/status -TimeoutSec 2; break } catch { Start-Sleep 1 }
             }
             if (-not $s.running) { throw 'WirePeek did not report running' }
             $ui = Invoke-WebRequest http://127.0.0.1:5390/ -UseBasicParsing
             if ($ui.StatusCode -ne 200) { throw "UI returned $($ui.StatusCode)" }
             "WirePeek $env:TAG is up: proxy on $($s.port), UI served"
-          } finally { Stop-Process -Id $p.Id -Force }
+          } finally {
+            if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
+            # Show what the app printed, so a failed start isn't a bare timeout.
+            foreach ($f in 'smoke.out', 'smoke.err') {
+              "--- $f ---"
+              if (Test-Path $f) { Get-Content $f }
+            }
+          }
 
       # Never replace an existing asset: a changed file no longer matches the hash in published
       # winget manifests. An asset that is already there (e.g. on a re-run) is kept as-is.
