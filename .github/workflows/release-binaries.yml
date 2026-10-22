@@ -65,6 +65,13 @@ jobs:
             if ($ui.StatusCode -ne 200) { throw "UI returned $($ui.StatusCode)" }
             "WirePeek $env:TAG is up: proxy on $($s.port), UI served"
           } finally {
+            # TEMP diagnostics: print managed stacks of a hung process.
+            if (-not $s.running -and -not $p.HasExited) {
+              dotnet tool install -g dotnet-dump | Out-Null
+              $env:PATH += ";$env:USERPROFILE\.dotnet\tools"
+              dotnet-dump collect -p $p.Id -o hang.dmp --type Mini
+              dotnet-dump analyze hang.dmp -c 'clrstack -all' -c 'exit'
+            }
             if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
             # Show what the app printed, so a failed start isn't a bare timeout.
             foreach ($f in 'smoke.out', 'smoke.err') {
