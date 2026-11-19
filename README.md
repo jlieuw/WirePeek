@@ -21,7 +21,7 @@ web UI — where it's going, full headers, and decoded request/response bodies.
 
 ## Requirements
 - Windows 10/11, or macOS (uses the OS system proxy and the per-user certificate store)
-- For the .NET global tool or running from source: .NET SDK 10. The standalone Windows
+- For the .NET global tool or running from source: .NET SDK 11. The standalone Windows
   download needs nothing else.
 
 ## Install
