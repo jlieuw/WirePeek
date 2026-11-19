@@ -1,18 +1,24 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net;
+using System.Net.Security;
+using System.Net.Sockets;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Security.Authentication;
 using System.Security.Cryptography.X509Certificates;
 using Microsoft.Win32;
 using WirePeek.Hubs;
 using WirePeek.Models;
 using Titanium.Web.Proxy;
 using Titanium.Web.Proxy.EventArguments;
+using Titanium.Web.Proxy.Exceptions;
 using Titanium.Web.Proxy.Models;
 
 namespace WirePeek.Services;
 
 /// <summary>Startup configuration for <see cref="ProxyService"/>.</summary>
-public sealed record ProxyOptions(int Port);
+public sealed record ProxyOptions(int Port, int UiPort);
 
 public sealed class ProxyService : IHostedService, IDisposable
 {
@@ -23,17 +29,26 @@ public sealed class ProxyService : IHostedService, IDisposable
     private readonly ILogger<ProxyService> _logger;
 
     private readonly ProxyServer _proxy;
+    private readonly int _uiPort;
+
+    // Titanium clears SessionEventArgs.UserData before reporting a failure to ExceptionFunc, so
+    // keep our own (weak) link from the event args to the row they produced.
+    private readonly ConditionalWeakTable<SessionEventArgsBase, CapturedSession> _rows = new();
+    private readonly ConcurrentDictionary<string, SslPolicyErrors> _rejectedCerts = new(StringComparer.OrdinalIgnoreCase);
     private ExplicitProxyEndPoint? _endPoint;
 
     public int Port { get; }
     public bool IsRunning { get; private set; }
     public bool SystemProxyEnabled { get; private set; }
 
+    /// <summary>
+    /// When true, the system proxy settings (and NO_PROXY on Windows) stop bypassing loopback, so
+    /// calls to local APIs (localhost, 127.0.0.1) are routed through and captured as well.
+    /// </summary>
+    public bool CaptureLocalhost { get; private set; }
+
     /// <summary>When false, captured requests are passed through but not recorded.</summary>
     public bool CaptureEnabled { get; set; } = true;
-
-    /// <summary>Hosts to never record (e.g. the UI's own SignalR/API traffic).</summary>
-    public HashSet<string> IgnoredHosts { get; } = new(StringComparer.OrdinalIgnoreCase);
 
     public ProxyService(SessionStore store, ICaptureBroadcaster broadcaster, ILogger<ProxyService> logger, ProxyOptions options)
     {
@@ -41,6 +56,7 @@ public sealed class ProxyService : IHostedService, IDisposable
         _broadcaster = broadcaster;
         _logger = logger;
         Port = options.Port;
+        _uiPort = options.UiPort;
         _proxy = new ProxyServer();
     }
 
@@ -163,7 +179,17 @@ public sealed class ProxyService : IHostedService, IDisposable
     private const string HkcuEnvironmentKey = @"Environment";
     private static readonly string[] ManagedEnvVars = ["HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "NODE_EXTRA_CA_CERTS"];
 
+    // Serializes system-proxy changes: API calls run concurrently, and a localhost toggle
+    // re-applying settings while a disable restores them could leave the OS pointing at us
+    // with SystemProxyEnabled false (so nothing would restore it on shutdown).
+    private readonly Lock _systemProxyGate = new();
+
     public void EnableSystemProxy()
+    {
+        lock (_systemProxyGate) EnableSystemProxyCore();
+    }
+
+    private void EnableSystemProxyCore()
     {
         if (_endPoint is null) return;
         // Taking over would leave both instances believing they own the proxy, and whichever
@@ -173,7 +199,7 @@ public sealed class ProxyService : IHostedService, IDisposable
                 $"The system proxy is in use by another WirePeek instance (pid {other.Pid}, port {other.Port}). Turn it off there first.");
         if (OperatingSystem.IsMacOS())
         {
-            MacSystemIntegration.EnableSystemProxy(Port); // includes the loopback bypass
+            MacSystemIntegration.EnableSystemProxy(Port, CaptureLocalhost);
         }
         else
         {
@@ -183,7 +209,39 @@ public sealed class ProxyService : IHostedService, IDisposable
         }
         WriteOwnerRecord();
         SystemProxyEnabled = true;
-        _logger.LogInformation("System proxy enabled on 127.0.0.1:{Port} (loopback bypassed)", Port);
+        _logger.LogInformation("System proxy enabled on 127.0.0.1:{Port} (loopback {Loopback})", Port,
+            CaptureLocalhost ? "captured" : "bypassed");
+    }
+
+    /// <summary>Switches <see cref="CaptureLocalhost"/>, re-applying the bypass settings if the system proxy is ours.</summary>
+    public void SetCaptureLocalhost(bool enabled)
+    {
+        lock (_systemProxyGate) SetCaptureLocalhostCore(enabled);
+    }
+
+    private void SetCaptureLocalhostCore(bool enabled)
+    {
+        var previous = CaptureLocalhost;
+        CaptureLocalhost = enabled;
+        if (!SystemProxyEnabled || LiveForeignOwner() is not null) return;
+        try
+        {
+            if (OperatingSystem.IsMacOS())
+            {
+                MacSystemIntegration.EnableSystemProxy(Port, CaptureLocalhost);
+            }
+            else
+            {
+                SetLocalBypass();
+                SetProxyEnvVars();
+            }
+        }
+        catch
+        {
+            CaptureLocalhost = previous;
+            throw;
+        }
+        _logger.LogInformation("Localhost capture {State}", enabled ? "enabled" : "disabled");
     }
 
     /// <summary>
@@ -223,7 +281,10 @@ public sealed class ProxyService : IHostedService, IDisposable
             {
                 envKey.SetValue("HTTP_PROXY", proxyUrl, RegistryValueKind.String);
                 envKey.SetValue("HTTPS_PROXY", proxyUrl, RegistryValueKind.String);
-                envKey.SetValue("NO_PROXY", "localhost,127.0.0.1,::1", RegistryValueKind.String);
+                if (CaptureLocalhost)
+                    envKey.DeleteValue("NO_PROXY", throwOnMissingValue: false);
+                else
+                    envKey.SetValue("NO_PROXY", "localhost,127.0.0.1,::1", RegistryValueKind.String);
                 if (pemSet)
                     envKey.SetValue("NODE_EXTRA_CA_CERTS", CaKeyStore.CaPemPath, RegistryValueKind.String);
             }
@@ -311,8 +372,9 @@ public sealed class ProxyService : IHostedService, IDisposable
     }
 
     /// <summary>
-    /// Ensure the machine's own loopback traffic (incl. this tool's web UI + SignalR
-    /// socket) bypasses the proxy, so enabling capture never breaks the UI.
+    /// Keeps loopback traffic off the proxy unless <see cref="CaptureLocalhost"/> is on. "&lt;-loopback&gt;"
+    /// removes WinINet's implicit loopback bypass, so with capture on, local calls (including this UI,
+    /// which the proxy forwards but doesn't record) are routed through the proxy.
     /// </summary>
     private void SetLocalBypass()
     {
@@ -321,7 +383,7 @@ public sealed class ProxyService : IHostedService, IDisposable
         {
             using var key = Registry.CurrentUser.OpenSubKey(
                 @"Software\Microsoft\Windows\CurrentVersion\Internet Settings", writable: true);
-            key?.SetValue("ProxyOverride", "localhost;127.0.0.1;<-loopback>", RegistryValueKind.String);
+            key?.SetValue("ProxyOverride", CaptureLocalhost ? "<-loopback>" : "localhost;127.0.0.1;<-loopback>", RegistryValueKind.String);
             InternetSetOption(IntPtr.Zero, INTERNET_OPTION_SETTINGS_CHANGED, IntPtr.Zero, 0);
             InternetSetOption(IntPtr.Zero, INTERNET_OPTION_REFRESH, IntPtr.Zero, 0);
         }
@@ -338,6 +400,11 @@ public sealed class ProxyService : IHostedService, IDisposable
     private static extern bool InternetSetOption(IntPtr hInternet, int dwOption, IntPtr lpBuffer, int dwBufferLength);
 
     public void DisableSystemProxy()
+    {
+        lock (_systemProxyGate) DisableSystemProxyCore();
+    }
+
+    private void DisableSystemProxyCore()
     {
         if (LiveForeignOwner() is { } other)
         {
@@ -511,6 +578,7 @@ public sealed class ProxyService : IHostedService, IDisposable
         _proxy.BeforeRequest += OnBeforeRequest;
         _proxy.BeforeResponse += OnBeforeResponse;
         _proxy.ServerCertificateValidationCallback += OnServerCertValidation;
+        _proxy.ExceptionFunc = OnProxyException;
 
         _proxy.Start(changeSystemProxySettings: false);
         IsRunning = true;
@@ -565,21 +633,139 @@ public sealed class ProxyService : IHostedService, IDisposable
     {
         // Validate upstream server certificates by default so the proxy->server leg
         // isn't silently MITM-able. Invalid certs cause that request to fail (safe default).
-        e.IsValid = e.SslPolicyErrors == System.Net.Security.SslPolicyErrors.None;
+        e.IsValid = e.SslPolicyErrors == SslPolicyErrors.None;
         if (!e.IsValid)
-            _logger.LogWarning("Rejected upstream certificate for {Host}: {Errors}",
-                e.Session?.HttpClient?.Request?.RequestUri?.Host, e.SslPolicyErrors);
+        {
+            var uri = e.Session?.HttpClient?.Request?.RequestUri;
+            _logger.LogWarning("Rejected upstream certificate for {Host}: {Errors}", uri?.Host, e.SslPolicyErrors);
+            // The failure reported afterwards only says "rejected by the callback". The request's
+            // row isn't reachable from here (Titanium validates on a connection it prefetches for
+            // the CONNECT tunnel, before the request exists), so remember the reason per endpoint.
+            if (uri is not null) _rejectedCerts[$"{uri.Host}:{uri.Port}"] = e.SslPolicyErrors;
+        }
         return Task.CompletedTask;
     }
 
     // ---- Capture handlers --------------------------------------------------
+    /// <summary>
+    /// Titanium reports failures here instead of through the session events, so without this a
+    /// request whose upstream leg fails stays "pending" forever, and a client that rejects our
+    /// certificate during the TLS handshake never shows up at all.
+    /// </summary>
+    private void OnProxyException(Exception ex)
+    {
+        try
+        {
+            switch (ex)
+            {
+                case ProxyConnectException { Session: TunnelConnectSessionEventArgs tunnel }:
+                    RecordFailure(tunnel, DescribeTunnelFailure(ex));
+                    break;
+                case ProxyHttpException { Session: { } session }:
+                    RecordFailure(session, DescribeRequestFailure(ex, session));
+                    break;
+                default:
+                    _logger.LogDebug(ex, "Proxy error");
+                    break;
+            }
+        }
+        catch (Exception inner)
+        {
+            _logger.LogDebug(inner, "Could not record proxy failure");
+        }
+    }
+
+    private void RecordFailure(SessionEventArgsBase args, string error)
+    {
+        if (RowFor(args) is { } session)
+        {
+            // Errors after the response arrived (e.g. the client hanging up mid-body) aren't
+            // failures of the request itself; don't turn a completed row into an error row.
+            if (session.HasResponse) return;
+            session.Error ??= error;
+            session.DurationMs = (DateTime.UtcNow - session.StartedUtc).TotalMilliseconds;
+            Broadcast(_broadcaster.UpdateSessionAsync(SessionSummary.From(session)));
+            return;
+        }
+
+        // The failure happened before OnBeforeRequest ran (e.g. the client rejected our
+        // certificate inside a CONNECT tunnel), so there is no row yet: add one.
+        var req = args.HttpClient.Request;
+        var uri = req.RequestUri;
+        if (!CaptureEnabled || IsOwnTraffic(uri)) return;
+        var isTunnel = args is TunnelConnectSessionEventArgs;
+        var failed = new CapturedSession
+        {
+            StartedUtc = DateTime.UtcNow,
+            Method = req.Method ?? (isTunnel ? "CONNECT" : ""),
+            Scheme = isTunnel ? "https" : uri.Scheme,
+            Host = uri.Host,
+            Url = isTunnel ? $"{uri.Host}:{uri.Port}" : req.Url,
+            Path = isTunnel ? $"{uri.Host}:{uri.Port}" : uri.PathAndQuery,
+            RequestHeaders = req.Headers.Select(h => new HeaderItem { Name = h.Name, Value = h.Value }).ToList(),
+            Error = error
+        };
+        _rows.AddOrUpdate(args, failed);
+        _store.Add(failed);
+        Broadcast(_broadcaster.NewSessionAsync(SessionSummary.From(failed)));
+    }
+
+    private CapturedSession? RowFor(SessionEventArgsBase? args) =>
+        args is null ? null : args.UserData as CapturedSession ?? (_rows.TryGetValue(args, out var row) ? row : null);
+
+    private void Broadcast(Task send) =>
+        send.ContinueWith(t => _logger.LogDebug(t.Exception, "Broadcast failed"), TaskContinuationOptions.OnlyOnFaulted);
+
+    private static string DescribeTunnelFailure(Exception ex)
+    {
+        if (Find<AuthenticationException>(ex) is not null || Find<IOException>(ex) is not null)
+            return "TLS handshake with the client failed: the client doesn't trust the WirePeek root CA " +
+                   "(or pins its certificates). Trust the CA in that app, or point it at the CA file. " +
+                   $"Details: {Innermost(ex).Message}";
+        return $"Tunnel failed: {Innermost(ex).Message}";
+    }
+
+    private string DescribeRequestFailure(Exception ex, SessionEventArgsBase session)
+    {
+        var uri = session.HttpClient.Request.RequestUri;
+        var host = uri.Host;
+        if (Find<AuthenticationException>(ex) is not null)
+            return _rejectedCerts.TryRemove($"{host}:{uri.Port}", out var errors)
+                ? $"The certificate of {host} is not valid ({errors}), so WirePeek refused to connect."
+                : $"TLS handshake with {host} failed: {Innermost(ex).Message}";
+        if (Find<SocketException>(ex) is { } socket)
+            return $"Could not connect to {host}: {socket.Message}";
+        return Innermost(ex).Message;
+    }
+
+    private static T? Find<T>(Exception? ex) where T : Exception
+    {
+        for (; ex is not null; ex = ex.InnerException)
+            if (ex is T match) return match;
+        return null;
+    }
+
+    private static Exception Innermost(Exception ex)
+    {
+        while (ex.InnerException is not null) ex = ex.InnerException;
+        return ex;
+    }
+
+    /// <summary>
+    /// True for requests to WirePeek's own UI or proxy port. Other loopback traffic (a local API
+    /// called from Postman or a test) is captured like anything else.
+    /// </summary>
+    private bool IsOwnTraffic(Uri uri) =>
+        (uri.IsLoopback || uri.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase))
+        && (uri.Port == _uiPort || uri.Port == Port);
+
     private async Task OnBeforeRequest(object sender, SessionEventArgs e)
     {
         if (!CaptureEnabled) return;
 
         var req = e.HttpClient.Request;
-        var host = e.HttpClient.Request.RequestUri.Host;
-        if (IgnoredHosts.Contains(host)) return;
+        var host = req.RequestUri.Host;
+        if (IsOwnTraffic(req.RequestUri)) return;
 
         var session = new CapturedSession
         {
@@ -611,6 +797,7 @@ public sealed class ProxyService : IHostedService, IDisposable
         }
 
         e.UserData = session;
+        _rows.AddOrUpdate(e, session);
         _store.Add(session);
         await _broadcaster.NewSessionAsync(SessionSummary.From(session));
     }

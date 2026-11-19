@@ -17,7 +17,7 @@ public static class MacSystemIntegration
     private const string NetworkSetup = "/usr/sbin/networksetup";
     private const string Scutil = "/usr/sbin/scutil";
 
-    // Hosts that must never go through the proxy, so enabling capture never breaks the UI.
+    // Loopback hosts kept off the proxy unless the user opts into capturing local traffic.
     private static readonly string[] LoopbackBypass = ["localhost", "127.0.0.1", "::1"];
 
     // Original per-service proxy settings, saved before we overwrite them. Its presence acts as
@@ -59,10 +59,11 @@ public static class MacSystemIntegration
 
     /// <summary>
     /// Points the HTTP and HTTPS proxy of every enabled network service at 127.0.0.1:<paramref name="port"/>,
-    /// adding loopback to each service's bypass list. Originals are backed up first — only if no
-    /// backup exists yet, so a re-enable never overwrites the real originals with our own values.
+    /// adding loopback to each service's bypass list unless <paramref name="captureLoopback"/>. Originals
+    /// are backed up first — only if no backup exists yet, so a re-enable (also used to switch
+    /// <paramref name="captureLoopback"/>) never overwrites the real originals with our own values.
     /// </summary>
-    public static void EnableSystemProxy(int port)
+    public static void EnableSystemProxy(int port, bool captureLoopback = false)
     {
         var services = EnabledNetworkServices();
         if (services.Count == 0) throw new InvalidOperationException("No enabled network services found.");
@@ -91,8 +92,15 @@ public static class MacSystemIntegration
             RunNetworkSetup("-setsecurewebproxy", service, "127.0.0.1", port.ToString());
 
             var original = backups.FirstOrDefault(b => b.Service == service)?.Bypass ?? [];
-            var bypass = original.Concat(LoopbackBypass).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-            RunNetworkSetup(["-setproxybypassdomains", service, .. bypass]);
+            // With capture on, also drop loopback entries the user already had: they'd keep local
+            // calls off the proxy. The backup keeps the original list for restoring.
+            var bypass = (captureLoopback
+                    ? original.Where(d => !LoopbackBypass.Contains(d, StringComparer.OrdinalIgnoreCase))
+                    : original.Concat(LoopbackBypass))
+                .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            RunNetworkSetup(bypass.Length == 0
+                ? ["-setproxybypassdomains", service, "Empty"]
+                : ["-setproxybypassdomains", service, .. bypass]);
         }
     }
 

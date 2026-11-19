@@ -107,9 +107,12 @@ body { display: flex; flex-direction: column; height: 100vh; }
 .layout { display: flex; flex: 1; min-height: 0; }
 .list { flex: 1; overflow: auto; position: relative; border-right: 1px solid var(--border); }
 .detail { width: 46%; min-width: 360px; overflow: auto; background: var(--bg-2); }
+.layout.detail-closed .detail { display: none; }
+.layout.detail-closed .list { border-right: none; }
 
 /* Table */
 table { width: 100%; border-collapse: collapse; }
+#table { table-layout: fixed; }
 thead th {
   position: sticky; top: 0;
   background: var(--bg-3);
@@ -119,7 +122,17 @@ thead th {
   font-weight: 600;
   font-size: 12px;
   z-index: 1;
+  overflow: hidden;
 }
+
+/* Column resize handle on the right edge of a header cell */
+.col-resizer {
+  position: absolute; top: 0; right: 0; bottom: 0; width: 6px;
+  cursor: col-resize; z-index: 2;
+}
+.col-resizer:hover, .col-resizer:focus-visible, body.resizing .col-resizer:active { background: var(--accent-hover); opacity: .5; }
+.col-resizer:focus-visible { outline: none; }
+body.resizing { cursor: col-resize; user-select: none; }
 tbody td {
   padding: 4px 8px;
   border-bottom: 1px solid var(--row-border);
@@ -134,9 +147,9 @@ tbody tr.selected { background: var(--sel); }
 
 .c-idx { width: 50px; }
 .c-clock { width: 96px; }
-.c-method { width: 64px; }
+.c-method { width: 88px; }
 .c-status { width: 56px; }
-.c-host { width: 22%; }
+.c-host { width: 180px; }
 .c-type { width: 110px; }
 .c-size { width: 72px; text-align: right; }
 .c-time { width: 76px; text-align: right; }
@@ -174,6 +187,11 @@ thead th { vertical-align: top; }
 .st-5 { color: var(--red); }
 .st-pending { color: var(--text-dim); }
 .st-err { color: var(--red); font-weight: 600; }
+.m-CONNECT { color: var(--text-dim); }
+.detail-error {
+  margin-top: 8px; padding: 6px 10px; border-left: 3px solid var(--red);
+  color: var(--red); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere;
+}
 
 .empty, .detail-empty {
   position: absolute; inset: 0;
@@ -184,7 +202,8 @@ thead th { vertical-align: top; }
 .empty code, .detail code { background: var(--bg-3); padding: 1px 5px; border-radius: 3px; font-family: var(--mono); }
 
 /* Detail */
-.detail-head { padding: 12px; border-bottom: 1px solid var(--border); background: var(--bg-3); }
+.detail-head { position: relative; padding: 12px 44px 12px 12px; border-bottom: 1px solid var(--border); background: var(--bg-3); }
+.detail-close { position: absolute; top: 8px; right: 8px; padding: 2px 8px; }
 .detail-url { font-family: var(--mono); word-break: break-all; font-size: 12px; }
 .detail-meta { color: var(--text-dim); margin-top: 6px; font-size: 12px; display: flex; gap: 14px; flex-wrap: wrap; }
 .detail-actions { margin-top: 10px; display: flex; gap: 6px; }

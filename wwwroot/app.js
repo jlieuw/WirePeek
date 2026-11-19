@@ -3,6 +3,7 @@
 const rowsEl = document.getElementById("rows");
 const emptyEl = document.getElementById("empty");
 const detailEl = document.getElementById("detail");
+const layoutEl = document.querySelector(".layout");
 const statusEl = document.getElementById("status");
 const countEl = document.getElementById("count");
 const searchEl = document.getElementById("search");
@@ -11,6 +12,7 @@ const onlyErrorsEl = document.getElementById("onlyErrors");
 const btnCapture = document.getElementById("btnCapture");
 const btnClear = document.getElementById("btnClear");
 const btnSysProxy = document.getElementById("btnSysProxy");
+const btnLocalhost = document.getElementById("btnLocalhost");
 const btnCertInstall = document.getElementById("btnCertInstall");
 const btnTheme = document.getElementById("btnTheme");
 const proxyAddrEl = document.getElementById("proxyAddr");
@@ -22,13 +24,56 @@ let selectedId = null;
 let activeTab = "overview";
 let captureEnabled = true;
 let sysProxyEnabled = false;
+let captureLocalhost = false;
 let certTrusted = false;
 
 // Per-column filter predicates (null = no filter). See makeMatcher for syntax.
 const columnFilters = { method: null, status: null, host: null, path: null, type: null };
 let searchMatcher = null;
 
-// Compiles filter text into a predicate, DevTools-style:
+// Compiles filter text into a predicate. Comma-separated terms; a value passes when it
+// matches any plain term and none of the !-prefixed ones, so "!firefox*, !*.microsoft.com"
+// hides those hosts and "api*, auth*" shows only those.
+function makeMatcher(text, anchorWildcards = false) {
+  const q = text.trim();
+  if (!q) return null;
+  const terms = splitTerms(q);
+  const include = [], exclude = [];
+  for (const t of terms) {
+    if (t.startsWith("!")) { const m = makeTermMatcher(t.slice(1), anchorWildcards); if (m) exclude.push(m); }
+    else { const m = makeTermMatcher(t, anchorWildcards); if (m) include.push(m); }
+  }
+  if (include.length === 0 && exclude.length === 0) return null;
+  return s => (include.length === 0 || include.some(m => m(s))) && !exclude.some(m => m(s));
+}
+
+// Splits on commas outside /regex/ literals, so "/a{1,3}/, !/b,c/, d" gives three terms.
+// A regex term runs to the first "/" that is followed by a comma or the end; one that is
+// still being typed (no closing slash yet) takes the rest of the text.
+function splitTerms(q) {
+  const terms = [];
+  let i = 0;
+  while (i < q.length) {
+    while (i < q.length && /[\s,]/.test(q[i])) i++;
+    if (i >= q.length) break;
+    const body = q[i] === "!" ? i + 1 : i;
+    let end;
+    if (q[body] === "/") {
+      const close = /\/\s*(?:,|$)/g;
+      close.lastIndex = body + 1;
+      const m = close.exec(q);
+      end = m ? m.index + 1 : q.length;
+    } else {
+      end = q.indexOf(",", i);
+      if (end < 0) end = q.length;
+    }
+    terms.push(q.slice(i, end).trim());
+    i = end;
+  }
+  return terms.filter(Boolean);
+}
+
+// One filter term, DevTools-style:
 //   /pattern/  → regular expression (case-insensitive)
 //   a*b        → wildcard, * matches any run of characters
 //   plain text → case-insensitive substring
@@ -36,8 +81,8 @@ let searchMatcher = null;
 // anchorWildcards: column filters glob against the whole cell value (so "2*" means
 // 2xx, not "contains a 2"); the global search matches against a concatenated
 // haystack where full-match anchoring would never succeed, so it stays unanchored.
-function makeMatcher(text, anchorWildcards = false) {
-  const q = text.trim();
+function makeTermMatcher(q, anchorWildcards) {
+  q = q.trim();
   if (!q) return null;
   if (q.length > 2 && q.startsWith("/") && q.endsWith("/")) {
     try {
@@ -149,7 +194,7 @@ function rowHtml(s) {
     <td class="c-idx">${s.Index}</td>
     <td class="c-clock" title="${esc(fmtDateTime(s.StartedUtc))}">${esc(fmtClock(s.StartedUtc))}</td>
     <td class="c-method"><span class="method m-${esc(s.Method)}">${esc(s.Method)}</span></td>
-    <td class="c-status"><span class="${statusClass(s)}">${esc(statusText(s))}</span></td>
+    <td class="c-status"${s.Error ? ` title="${esc(s.Error)}"` : ""}><span class="${statusClass(s)}">${esc(statusText(s))}</span></td>
     <td class="c-host"><span class="host scheme-${esc(s.Scheme)}">${esc(s.Host)}</span></td>
     <td class="c-path" title="${esc(s.Path)}">${esc(s.Path)}</td>
     <td class="c-type">${esc(shortType(s.ResponseContentType))}</td>
@@ -234,7 +279,7 @@ function renderDetail(s) {
         <tr><td class="k">Host</td><td>${esc(s.Host)}</td></tr>
         <tr><td class="k">Scheme</td><td>${esc(s.Scheme)}</td></tr>
         <tr><td class="k">Started</td><td>${esc(fmtDateTime(s.StartedUtc)) || "—"}</td></tr>
-        <tr><td class="k">Status</td><td>${s.HasResponse ? esc(s.StatusCode + " " + (s.StatusText || "")) : "(pending)"}</td></tr>
+        <tr><td class="k">Status</td><td>${s.HasResponse ? esc(s.StatusCode + " " + (s.StatusText || "")) : s.Error ? "(failed)" : "(pending)"}</td></tr>
         <tr><td class="k">Duration</td><td>${esc(fmtTime(s.DurationMs)) || "—"}</td></tr>
         <tr><td class="k">Req. type</td><td>${esc(s.RequestContentType || "—")}</td></tr>
         <tr><td class="k">Resp. type</td><td>${esc(s.ResponseContentType || "—")}</td></tr>
@@ -246,7 +291,9 @@ function renderDetail(s) {
       <div class="section-title" style="margin-top:16px">Request body</div>
       ${bodyBlock(s.RequestBody, s.RequestBodyIsBinary, s.RequestContentType, "Request")}`;
   } else if (activeTab === "response") {
-    if (!s.HasResponse) {
+    if (s.Error && !s.HasResponse) {
+      body = `<div class="note">No response: the request failed (see the error above).</div>`;
+    } else if (!s.HasResponse) {
       body = `<div class="note">Awaiting response…</div>`;
     } else {
       body = `<div class="section-title">Response headers</div>${headersTable(s.ResponseHeaders)}
@@ -268,15 +315,18 @@ function renderDetail(s) {
 
   detailEl.innerHTML = `
     <div class="detail-head">
+      <button class="btn detail-close" id="btnCloseDetail" title="Close details (Esc) — click a request to reopen">✕</button>
       <div class="detail-url"><span class="method m-${esc(s.Method)}">${esc(s.Method)}</span> ${esc(s.Url)}</div>
       <div class="detail-meta">
-        <span class="${statusClass(s)}">${s.HasResponse ? esc(s.StatusCode) : "pending"}</span>
+        <span class="${statusClass(s)}">${s.HasResponse ? esc(s.StatusCode) : s.Error ? "failed" : "pending"}</span>
         <span>${esc(shortType(s.ResponseContentType) || "")}</span>
         <span>${esc(fmtSize(s.ResponseBodySize))}</span>
         <span>${esc(fmtTime(s.DurationMs))}</span>
       </div>
+      ${s.Error ? `<div class="detail-error">${esc(s.Error)}</div>` : ""}
       <div class="detail-actions">
-        <button class="btn" id="btnCurl">📋 Copy as cURL</button>
+        ${s.Method === "CONNECT" ? "" : `<button class="btn" id="btnCurl">📋 Copy as cURL</button>`}
+        <button class="btn" id="btnHideHost" title="Add !${esc(s.Host)} to the Host filter">🚫 Hide ${esc(s.Host)}</button>
       </div>
     </div>
     <div class="tabs">
@@ -286,6 +336,9 @@ function renderDetail(s) {
 
   detailEl.querySelectorAll(".tab").forEach(t =>
     t.addEventListener("click", () => { activeTab = t.dataset.tab; renderDetail(currentDetail); }));
+
+  document.getElementById("btnCloseDetail").addEventListener("click", closeDetail);
+  document.getElementById("btnHideHost").addEventListener("click", () => hideHost(s.Host));
 
   const btnCurl = document.getElementById("btnCurl");
   if (btnCurl) btnCurl.addEventListener("click", () => copy(toCurl(s), btnCurl));
@@ -306,6 +359,22 @@ function copy(text, btn) {
   });
 }
 
+function openDetail() { layoutEl.classList.remove("detail-closed"); }
+function closeDetail() { layoutEl.classList.add("detail-closed"); }
+
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape" && !e.target.closest("input")) closeDetail();
+});
+
+function hideHost(host) {
+  const inp = colFilterEls.find(i => i.dataset.col === "host");
+  const term = "!" + host;
+  const terms = splitTerms(inp.value);
+  if (!terms.includes(term)) inp.value = [...terms, term].join(", ");
+  refreshFilters();
+  renderList();
+}
+
 async function loadDetail(id) {
   try {
     const r = await fetch(`/api/sessions/${id}`);
@@ -323,6 +392,7 @@ rowsEl.addEventListener("click", e => {
   rowsEl.querySelectorAll("tr.selected").forEach(x => x.classList.remove("selected"));
   tr.classList.add("selected");
   activeTab = "overview";
+  openDetail();
   loadDetail(selectedId);
 });
 
@@ -337,7 +407,7 @@ searchEl.addEventListener("input", () => { refreshFilters(); renderList(); });
 onlyErrorsEl.addEventListener("change", renderList);
 
 colFilterEls.forEach(inp => {
-  inp.title = "text, * wildcard, or /regex/";
+  inp.title = "text, * wildcard or /regex/ · !term excludes · comma-separate several terms";
   inp.addEventListener("input", () => { refreshFilters(); renderList(); });
   // Don't let clicks on the filter inputs trigger header/sort behaviour.
   inp.addEventListener("click", e => e.stopPropagation());
@@ -376,6 +446,15 @@ btnSysProxy.addEventListener("click", async () => {
   else await alertProblem(r, "Could not change the system proxy");
 });
 
+btnLocalhost.addEventListener("click", async () => {
+  const r = await fetch("/api/capture-localhost", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled: !captureLocalhost })
+  });
+  if (r.ok) { captureLocalhost = (await r.json()).captureLocalhost; updateLocalhostBtn(); }
+  else await alertProblem(r, "Could not change localhost capture");
+});
+
 btnCertInstall.addEventListener("click", async () => {
   const r = await fetch("/api/cert/install", { method: "POST" });
   if (r.ok) { certTrusted = (await r.json()).certTrusted; updateCertBtn(); }
@@ -397,10 +476,96 @@ function updateSysProxyBtn() {
   btnSysProxy.textContent = "🌐 System Proxy: " + (sysProxyEnabled ? "On" : "Off");
   btnSysProxy.classList.toggle("on", sysProxyEnabled);
 }
+function updateLocalhostBtn() {
+  btnLocalhost.textContent = "🏠 Localhost: " + (captureLocalhost ? "On" : "Off");
+  btnLocalhost.classList.toggle("on", captureLocalhost);
+}
 function updateCertBtn() {
   btnCertInstall.textContent = certTrusted ? "🔒 Cert Trusted ✓" : "🔒 Trust Cert";
   btnCertInstall.classList.toggle("on", certTrusted);
 }
+
+// ---------- resizable columns ----------
+// Every column but Path gets a drag handle; Path takes whatever width is left (and the list
+// scrolls horizontally once the others outgrow it). Widths persist per browser; a double-click
+// on a handle resets that column. Handles are focusable: arrow keys resize, Enter resets.
+const COLUMN_WIDTHS_KEY = "columnWidths";
+function loadColumnWidths() {
+  try { return JSON.parse(localStorage.getItem(COLUMN_WIDTHS_KEY)) || {}; } catch { return {}; }
+}
+function saveColumnWidths(widths) {
+  try { localStorage.setItem(COLUMN_WIDTHS_KEY, JSON.stringify(widths)); } catch { /* not persisted */ }
+}
+
+const tableEl = document.getElementById("table");
+const PATH_MIN_WIDTH = 200;
+// With a fixed layout, Path would shrink to nothing once the other columns fill the list;
+// keep it readable and let the list scroll horizontally instead.
+function updateTableMinWidth() {
+  let fixed = 0;
+  for (const th of tableEl.querySelectorAll("thead th:not(.c-path)")) fixed += th.offsetWidth;
+  tableEl.style.minWidth = fixed + PATH_MIN_WIDTH + "px";
+}
+
+const columnWidths = loadColumnWidths();
+for (const th of tableEl.querySelectorAll("thead th")) {
+  const col = [...th.classList].find(c => c.startsWith("c-"));
+  if (!col || col === "c-path") continue;
+  if (columnWidths[col]) th.style.width = columnWidths[col] + "px";
+
+  const handle = document.createElement("div");
+  handle.className = "col-resizer";
+  handle.tabIndex = 0;
+  handle.setAttribute("role", "separator");
+  handle.setAttribute("aria-orientation", "vertical");
+  handle.setAttribute("aria-label", `Resize ${th.firstChild.textContent.trim()} column`);
+  handle.title = "Drag or use arrow keys to resize; double-click or Enter to reset";
+  th.appendChild(handle);
+
+  const setWidth = w => {
+    w = Math.max(36, Math.round(w));
+    th.style.width = w + "px";
+    columnWidths[col] = w;
+    updateTableMinWidth();
+  };
+  const reset = () => {
+    th.style.width = "";
+    delete columnWidths[col];
+    saveColumnWidths(columnWidths);
+    updateTableMinWidth();
+  };
+
+  handle.addEventListener("click", e => e.stopPropagation());
+  handle.addEventListener("dblclick", reset);
+  handle.addEventListener("keydown", e => {
+    const step = e.shiftKey ? 50 : 10;
+    if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+      e.preventDefault();
+      setWidth(th.offsetWidth + (e.key === "ArrowRight" ? step : -step));
+      saveColumnWidths(columnWidths);
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      reset();
+    }
+  });
+  handle.addEventListener("pointerdown", e => {
+    e.preventDefault();
+    handle.setPointerCapture(e.pointerId);
+    const startX = e.clientX, startW = th.offsetWidth;
+    document.body.classList.add("resizing");
+    const move = ev => setWidth(startW + ev.clientX - startX);
+    const up = () => {
+      handle.removeEventListener("pointermove", move);
+      document.body.classList.remove("resizing");
+      saveColumnWidths(columnWidths);
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", up, { once: true });
+    handle.addEventListener("pointercancel", up, { once: true });
+  });
+}
+
+updateTableMinWidth();
 
 // ---------- bootstrap ----------
 async function loadStatus() {
@@ -410,7 +575,8 @@ async function loadStatus() {
     captureEnabled = s.captureEnabled;
     sysProxyEnabled = s.systemProxyEnabled;
     certTrusted = s.certTrusted;
-    updateCaptureBtn(); updateSysProxyBtn(); updateCertBtn();
+    captureLocalhost = s.captureLocalhost;
+    updateCaptureBtn(); updateSysProxyBtn(); updateLocalhostBtn(); updateCertBtn();
     statusEl.textContent = `proxy 127.0.0.1:${s.port} • ${s.count}/${s.capacity}`;
     statusEl.className = "status ok";
     proxyAddrEl.textContent = `http://127.0.0.1:${s.port}`;

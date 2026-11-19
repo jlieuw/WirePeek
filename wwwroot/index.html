@@ -25,6 +25,7 @@
       <button id="btnClear" class="btn" title="Clear all captured sessions">🗑 Clear</button>
       <span class="divider"></span>
       <button id="btnSysProxy" class="btn" title="Route all machine traffic through this proxy">🌐 System Proxy: Off</button>
+      <button id="btnLocalhost" class="btn" title="Also route localhost / 127.0.0.1 through the system proxy, so calls to local APIs are captured">🏠 Localhost: Off</button>
       <button id="btnCertInstall" class="btn" title="Trust the root certificate (enables HTTPS decryption)">🔒 Trust Cert</button>
       <a id="btnCertDownload" class="btn" href="/api/cert" download title="Download root certificate (.cer)">⬇ Cert</a>
     </div>
@@ -34,7 +35,7 @@
   </header>
 
   <div class="filters">
-    <input id="search" type="search" placeholder="Filter by URL, host, method, status… (text, * wildcard, /regex/)" />
+    <input id="search" type="search" placeholder="Filter by URL, host, method, status… (text, * wildcard, /regex/, !exclude, comma for several)" />
     <label class="chk"><input type="checkbox" id="onlyErrors" /> Errors only</label>
     <span id="count" class="count">0</span>
   </div>
