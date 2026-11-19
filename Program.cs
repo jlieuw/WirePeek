@@ -39,7 +39,7 @@ builder.Services.AddSignalR()
     .AddJsonProtocol(o => o.PayloadSerializerOptions.PropertyNamingPolicy = null);
 builder.Services.AddSingleton<SessionStore>(_ => new SessionStore(capacity: 5000));
 builder.Services.AddSingleton<ICaptureBroadcaster, CaptureBroadcaster>();
-builder.Services.AddSingleton(new ProxyOptions(proxyPort));
+builder.Services.AddSingleton(new ProxyOptions(proxyPort, uiPort));
 builder.Services.AddSingleton<ProxyService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<ProxyService>());
 
@@ -94,11 +94,6 @@ IFileProvider uiFiles = app.Environment.IsDevelopment() && Directory.Exists(devW
 app.UseDefaultFiles(new DefaultFilesOptions { FileProvider = uiFiles });
 app.UseStaticFiles(new StaticFileOptions { FileProvider = uiFiles });
 
-var proxy = app.Services.GetRequiredService<ProxyService>();
-// Don't record the UI's own traffic if it ever routes through the proxy.
-proxy.IgnoredHosts.Add("localhost");
-proxy.IgnoredHosts.Add("127.0.0.1");
-
 app.MapHub<CaptureHub>("/hub");
 
 app.MapGet("/api/status", (ProxyService p, SessionStore store) => Results.Ok(new
@@ -109,6 +104,7 @@ app.MapGet("/api/status", (ProxyService p, SessionStore store) => Results.Ok(new
     certName = p.RootCertificateName,
     systemProxyEnabled = p.SystemProxyEnabled,
     captureEnabled = p.CaptureEnabled,
+    captureLocalhost = p.CaptureLocalhost,
     capacity = store.Capacity,
     count = store.ListSummaries().Count
 }));
@@ -132,6 +128,16 @@ app.MapPost("/api/capture", (CaptureToggle body, ProxyService p) =>
 {
     p.CaptureEnabled = body.Enabled;
     return Results.Ok(new { captureEnabled = p.CaptureEnabled });
+});
+
+app.MapPost("/api/capture-localhost", (CaptureToggle body, ProxyService p) =>
+{
+    try
+    {
+        p.SetCaptureLocalhost(body.Enabled);
+        return Results.Ok(new { captureLocalhost = p.CaptureLocalhost });
+    }
+    catch (Exception ex) { return Results.Problem(ex.Message); }
 });
 
 app.MapGet("/api/cert", (ProxyService p) =>

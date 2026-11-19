@@ -13,9 +13,18 @@ web UI — where it's going, full headers, and decoded request/response bodies.
 ## Features
 - Capture **all outgoing HTTP and HTTPS** traffic from the machine (via system proxy)
 - **HTTPS decryption** using a locally-generated, trusted root CA (like Fiddler)
+- **Failures are captured too**: a client that rejects the WirePeek CA shows up as a failed
+  `CONNECT` row, and requests whose upstream leg fails (invalid server certificate, DNS
+  error, connection refused) show the reason instead of staying pending forever
+- **Localhost capture**: calls to local APIs (`localhost`, `127.0.0.1`) are recorded, and the
+  **Localhost** toggle stops the system proxy from bypassing them
 - Live request list: timestamp, method, status, host, path, content-type, size, timing
 - Detail tabs: **Overview / Request / Response / Raw**, with pretty-printed JSON
 - Global search, **per-column filters** (method/status/host/path/type), "errors only" filter, pause/resume, clear
+  - Filters take comma-separated terms; prefix a term with `!` to exclude it, e.g.
+    `!firefox*, !*.microsoft.com` in the Host filter. **🚫 Hide host** in the detail pane adds one for you
+- **Resizable columns** (drag a header edge, double-click to reset) and a closable detail pane
+  (✕ or Esc; clicking a request reopens it)
 - **Copy as cURL**
 - In-memory ring buffer (last 5000 requests) — nothing written to disk
 
@@ -67,6 +76,23 @@ wirepeek --ui-port 5300 --proxy-port 9999        # installed tool
    - Point a single app at `http://127.0.0.1:8888` (e.g.
      `Invoke-WebRequest <url> -Proxy http://127.0.0.1:8888`).
 3. Generate traffic and watch it appear live. Click a row to inspect it.
+
+### Capturing calls to localhost
+Requests to `localhost`/`127.0.0.1` that reach the proxy are always recorded (except
+WirePeek's own UI). By default the system proxy and `NO_PROXY` keep loopback traffic off the
+proxy, though, so tools like Postman or integration tests calling a local API bypass it.
+Click **Localhost: Off → On** to stop bypassing loopback: on Windows this sets
+`ProxyOverride` to `<-loopback>` and removes `NO_PROXY`; on macOS it drops loopback from the
+proxy bypass list. Tests that use `WebApplicationFactory`/`TestServer` run in memory and
+never touch the network, so no proxy can capture them.
+
+### Something isn't showing up?
+- **A red `CONNECT` row** means the client doesn't trust the WirePeek root CA. Node-based
+  tools (Bruno, VS Code extensions such as httpyac) ignore the OS certificate store: set
+  `NODE_EXTRA_CA_CERTS` to the `rootCert.pem` path, or add it as a custom CA in the app.
+- **Nothing at all** usually means the app doesn't use the proxy. Apps read `HTTP_PROXY`/
+  `HTTPS_PROXY` when they start, so restart VS Code, Visual Studio, terminals, Postman or
+  Bruno after turning the system proxy on. Bruno also has its own proxy setting.
 
 When you're done, click **System Proxy: On → Off**. The proxy and system-proxy
 settings are also restored automatically when the app exits.
