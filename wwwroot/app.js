@@ -33,12 +33,11 @@ let searchMatcher = null;
 
 // Compiles filter text into a predicate. Comma-separated terms; a value passes when it
 // matches any plain term and none of the !-prefixed ones, so "!firefox*, !*.microsoft.com"
-// hides those hosts and "api*, auth*" shows only those. A lone /regex/ is never split,
-// so commas inside it (e.g. /a{1,3}/) keep working.
+// hides those hosts and "api*, auth*" shows only those.
 function makeMatcher(text, anchorWildcards = false) {
   const q = text.trim();
   if (!q) return null;
-  const terms = /^!?\/.*\/$/.test(q) ? [q] : q.split(",").map(t => t.trim()).filter(Boolean);
+  const terms = splitTerms(q);
   const include = [], exclude = [];
   for (const t of terms) {
     if (t.startsWith("!")) { const m = makeTermMatcher(t.slice(1), anchorWildcards); if (m) exclude.push(m); }
@@ -46,6 +45,32 @@ function makeMatcher(text, anchorWildcards = false) {
   }
   if (include.length === 0 && exclude.length === 0) return null;
   return s => (include.length === 0 || include.some(m => m(s))) && !exclude.some(m => m(s));
+}
+
+// Splits on commas outside /regex/ literals, so "/a{1,3}/, !/b,c/, d" gives three terms.
+// A regex term runs to the first "/" that is followed by a comma or the end; one that is
+// still being typed (no closing slash yet) takes the rest of the text.
+function splitTerms(q) {
+  const terms = [];
+  let i = 0;
+  while (i < q.length) {
+    while (i < q.length && /[\s,]/.test(q[i])) i++;
+    if (i >= q.length) break;
+    const body = q[i] === "!" ? i + 1 : i;
+    let end;
+    if (q[body] === "/") {
+      const close = /\/\s*(?:,|$)/g;
+      close.lastIndex = body + 1;
+      const m = close.exec(q);
+      end = m ? m.index + 1 : q.length;
+    } else {
+      end = q.indexOf(",", i);
+      if (end < 0) end = q.length;
+    }
+    terms.push(q.slice(i, end).trim());
+    i = end;
+  }
+  return terms.filter(Boolean);
 }
 
 // One filter term, DevTools-style:
@@ -344,7 +369,7 @@ document.addEventListener("keydown", e => {
 function hideHost(host) {
   const inp = colFilterEls.find(i => i.dataset.col === "host");
   const term = "!" + host;
-  const terms = inp.value.split(",").map(t => t.trim()).filter(Boolean);
+  const terms = splitTerms(inp.value);
   if (!terms.includes(term)) inp.value = [...terms, term].join(", ");
   refreshFilters();
   renderList();
@@ -463,7 +488,7 @@ function updateCertBtn() {
 // ---------- resizable columns ----------
 // Every column but Path gets a drag handle; Path takes whatever width is left (and the list
 // scrolls horizontally once the others outgrow it). Widths persist per browser; a double-click
-// on a handle resets that column.
+// on a handle resets that column. Handles are focusable: arrow keys resize, Enter resets.
 const COLUMN_WIDTHS_KEY = "columnWidths";
 function loadColumnWidths() {
   try { return JSON.parse(localStorage.getItem(COLUMN_WIDTHS_KEY)) || {}; } catch { return {}; }
@@ -490,27 +515,45 @@ for (const th of tableEl.querySelectorAll("thead th")) {
 
   const handle = document.createElement("div");
   handle.className = "col-resizer";
-  handle.title = "Drag to resize, double-click to reset";
+  handle.tabIndex = 0;
+  handle.setAttribute("role", "separator");
+  handle.setAttribute("aria-orientation", "vertical");
+  handle.setAttribute("aria-label", `Resize ${th.firstChild.textContent.trim()} column`);
+  handle.title = "Drag or use arrow keys to resize; double-click or Enter to reset";
   th.appendChild(handle);
 
-  handle.addEventListener("click", e => e.stopPropagation());
-  handle.addEventListener("dblclick", () => {
+  const setWidth = w => {
+    w = Math.max(36, Math.round(w));
+    th.style.width = w + "px";
+    columnWidths[col] = w;
+    updateTableMinWidth();
+  };
+  const reset = () => {
     th.style.width = "";
     delete columnWidths[col];
     saveColumnWidths(columnWidths);
     updateTableMinWidth();
+  };
+
+  handle.addEventListener("click", e => e.stopPropagation());
+  handle.addEventListener("dblclick", reset);
+  handle.addEventListener("keydown", e => {
+    const step = e.shiftKey ? 50 : 10;
+    if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+      e.preventDefault();
+      setWidth(th.offsetWidth + (e.key === "ArrowRight" ? step : -step));
+      saveColumnWidths(columnWidths);
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      reset();
+    }
   });
   handle.addEventListener("pointerdown", e => {
     e.preventDefault();
     handle.setPointerCapture(e.pointerId);
     const startX = e.clientX, startW = th.offsetWidth;
     document.body.classList.add("resizing");
-    const move = ev => {
-      const w = Math.max(36, Math.round(startW + ev.clientX - startX));
-      th.style.width = w + "px";
-      columnWidths[col] = w;
-      updateTableMinWidth();
-    };
+    const move = ev => setWidth(startW + ev.clientX - startX);
     const up = () => {
       handle.removeEventListener("pointermove", move);
       document.body.classList.remove("resizing");

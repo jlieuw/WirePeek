@@ -130,7 +130,8 @@ thead th {
   position: absolute; top: 0; right: 0; bottom: 0; width: 6px;
   cursor: col-resize; z-index: 2;
 }
-.col-resizer:hover, body.resizing .col-resizer:active { background: var(--accent-hover); opacity: .5; }
+.col-resizer:hover, .col-resizer:focus-visible, body.resizing .col-resizer:active { background: var(--accent-hover); opacity: .5; }
+.col-resizer:focus-visible { outline: none; }
 body.resizing { cursor: col-resize; user-select: none; }
 tbody td {
   padding: 4px 8px;

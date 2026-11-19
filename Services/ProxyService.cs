@@ -179,7 +179,17 @@ public sealed class ProxyService : IHostedService, IDisposable
     private const string HkcuEnvironmentKey = @"Environment";
     private static readonly string[] ManagedEnvVars = ["HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "NODE_EXTRA_CA_CERTS"];
 
+    // Serializes system-proxy changes: API calls run concurrently, and a localhost toggle
+    // re-applying settings while a disable restores them could leave the OS pointing at us
+    // with SystemProxyEnabled false (so nothing would restore it on shutdown).
+    private readonly Lock _systemProxyGate = new();
+
     public void EnableSystemProxy()
+    {
+        lock (_systemProxyGate) EnableSystemProxyCore();
+    }
+
+    private void EnableSystemProxyCore()
     {
         if (_endPoint is null) return;
         // Taking over would leave both instances believing they own the proxy, and whichever
@@ -205,6 +215,11 @@ public sealed class ProxyService : IHostedService, IDisposable
 
     /// <summary>Switches <see cref="CaptureLocalhost"/>, re-applying the bypass settings if the system proxy is ours.</summary>
     public void SetCaptureLocalhost(bool enabled)
+    {
+        lock (_systemProxyGate) SetCaptureLocalhostCore(enabled);
+    }
+
+    private void SetCaptureLocalhostCore(bool enabled)
     {
         var previous = CaptureLocalhost;
         CaptureLocalhost = enabled;
@@ -385,6 +400,11 @@ public sealed class ProxyService : IHostedService, IDisposable
     private static extern bool InternetSetOption(IntPtr hInternet, int dwOption, IntPtr lpBuffer, int dwBufferLength);
 
     public void DisableSystemProxy()
+    {
+        lock (_systemProxyGate) DisableSystemProxyCore();
+    }
+
+    private void DisableSystemProxyCore()
     {
         if (LiveForeignOwner() is { } other)
         {
@@ -616,11 +636,12 @@ public sealed class ProxyService : IHostedService, IDisposable
         e.IsValid = e.SslPolicyErrors == SslPolicyErrors.None;
         if (!e.IsValid)
         {
-            var host = e.Session?.HttpClient?.Request?.RequestUri?.Host;
-            _logger.LogWarning("Rejected upstream certificate for {Host}: {Errors}", host, e.SslPolicyErrors);
-            // The failure reported afterwards only says "rejected by the callback", and the
-            // session isn't reachable from here, so remember the reason for that host.
-            if (host is not null) _rejectedCerts[host] = e.SslPolicyErrors;
+            var uri = e.Session?.HttpClient?.Request?.RequestUri;
+            _logger.LogWarning("Rejected upstream certificate for {Host}: {Errors}", uri?.Host, e.SslPolicyErrors);
+            // The failure reported afterwards only says "rejected by the callback". The request's
+            // row isn't reachable from here (Titanium validates on a connection it prefetches for
+            // the CONNECT tunnel, before the request exists), so remember the reason per endpoint.
+            if (uri is not null) _rejectedCerts[$"{uri.Host}:{uri.Port}"] = e.SslPolicyErrors;
         }
         return Task.CompletedTask;
     }
@@ -706,9 +727,10 @@ public sealed class ProxyService : IHostedService, IDisposable
 
     private string DescribeRequestFailure(Exception ex, SessionEventArgsBase session)
     {
-        var host = session.HttpClient.Request.RequestUri.Host;
+        var uri = session.HttpClient.Request.RequestUri;
+        var host = uri.Host;
         if (Find<AuthenticationException>(ex) is not null)
-            return _rejectedCerts.TryRemove(host, out var errors)
+            return _rejectedCerts.TryRemove($"{host}:{uri.Port}", out var errors)
                 ? $"The certificate of {host} is not valid ({errors}), so WirePeek refused to connect."
                 : $"TLS handshake with {host} failed: {Innermost(ex).Message}";
         if (Find<SocketException>(ex) is { } socket)

@@ -92,7 +92,12 @@ public static class MacSystemIntegration
             RunNetworkSetup("-setsecurewebproxy", service, "127.0.0.1", port.ToString());
 
             var original = backups.FirstOrDefault(b => b.Service == service)?.Bypass ?? [];
-            var bypass = original.Concat(captureLoopback ? [] : LoopbackBypass).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            // With capture on, also drop loopback entries the user already had: they'd keep local
+            // calls off the proxy. The backup keeps the original list for restoring.
+            var bypass = (captureLoopback
+                    ? original.Where(d => !LoopbackBypass.Contains(d, StringComparer.OrdinalIgnoreCase))
+                    : original.Concat(LoopbackBypass))
+                .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
             RunNetworkSetup(bypass.Length == 0
                 ? ["-setproxybypassdomains", service, "Empty"]
                 : ["-setproxybypassdomains", service, .. bypass]);
